@@ -1,0 +1,94 @@
+[build-system]
+# Requirements for building the package
+requires = ["wheel", "setuptools >=40.8", "setuptools_scm[toml]>=6.2"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools_scm]
+
+[project]
+name = "netweave"
+dynamic = ["version"]
+description = "Weave together GTFS transit and OSM pedestrian networks for use in pandarm accessibility analyses."
+readme = "README.rst"
+keywords = ["gtfs", "transit", "osm", "pedestrian", "network", "accessibility", "routing"]
+license-files = ["License.txt"]
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: GNU Affero General Public License v3",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: GIS",
+]
+dependencies = [
+    "geopandas >=1.1",
+    "lazy-loader >=0.4",
+    "numpy >=1.26",
+    "pandas >=2.2",
+    "scikit-learn >=1.4",
+    "shapely >=2.0",
+    "scipy >=1.10",
+    "tables >=3.10",
+    "requests >=2.9",
+    "pyyaml >=6.0",
+    "tqdm >=4.60",
+    "matplotlib >=3.5",
+    "pandarm"
+]
+
+[project.optional-dependencies]
+plus = [
+    "osmnx >=2.0",
+    "pyarrow >=15.0",
+]
+dev = [
+    "codecov",
+    "pre-commit",
+    "pytest",
+    "pytest-cov",
+    "pytest-benchmark",
+    "ruff",
+    "mypy",
+]
+docs = [
+    "myst-parser",
+    "nbsphinx",
+    "numpydoc",
+    "sphinx",
+    "sphinxcontrib-bibtex",
+    "sphinx_bootstrap_theme",
+]
+all = [
+    "netweave[plus,dev,docs]"
+]
+
+[project.urls]
+Home = "https://github.com/oturns/netweave"
+Repository = "https://github.com/oturns/netweave"
+
+[tool.setuptools.packages.find]
+include = ["netweave", "netweave.*"]
+exclude = ["*.tests", "*.tests.*", "tests.*", "tests"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "N", "B", "A", "C4", "SIM", "ARG"]
+
+[tool.coverage.run]
+source = ["./netweave"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "if self.debug:",
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "except ModuleNotFoundError:",
+    "except ImportError",
+]
+
+[tool.pytest.ini_options]
+markers = [
+    "network: marks tests that require network access (deselect with '-m not network')",
+]
+testpaths = ["tests"]

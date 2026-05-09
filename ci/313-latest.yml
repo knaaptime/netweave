@@ -1,0 +1,37 @@
+name: test
+channels:
+  - conda-forge
+dependencies:
+  - python=3.13
+  - geopandas >=1.1
+  - numpy >=1.26
+  - pandas >=2.2
+  - scikit-learn >=1.4
+  - shapely >=2.0
+  - scipy >=1.10
+  - requests >=2.9
+  - pyyaml >=6.0
+  - tqdm >=4.60
+  - lazy_loader
+  - pyarrow
+  - geodatasets
+  - jupyterlab
+  # plus
+  - osmnx
+  - pandarm
+
+  # dev
+  - pytest
+  - pytest-cov
+  - pytest-benchmark
+  - ruff
+  - mypy
+  - pre-commit
+
+  # docs
+  - myst-parser
+  - nbsphinx
+  - numpydoc
+  - sphinx
+  - sphinxcontrib-bibtex
+  - sphinx_bootstrap_theme
