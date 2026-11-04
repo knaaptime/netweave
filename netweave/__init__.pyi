@@ -24,8 +24,17 @@ from .types import IntegratedNetwork as IntegratedNetwork
 from .types import OSMNetwork as OSMNetwork
 from .types import TransitNetwork as TransitNetwork
 
+# Pipeline
+from .integration.core import integrate as integrate
+from .io.gtfs import GTFSFeed as GTFSFeed
+from .io.gtfs import load_feed as load_feed
+from .io.transitland import fetch_feeds as fetch_feeds
+from .io.transitland import search_feeds as search_feeds
+from .transform.gtfs import create_transit_network as create_transit_network
+
 # Submodules (lazily loaded)
-from . import gtfs as gtfs
-from . import network as network
+from . import integration as integration
+from . import io as io
 from . import osm as osm
 from . import plot as plot
+from . import transform as transform

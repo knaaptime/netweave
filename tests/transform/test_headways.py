@@ -3,7 +3,7 @@
 
 import pandas as pd
 
-from netweave.gtfs.headways import compute_headways
+from netweave.transform.headways import compute_headways
 
 
 class TestComputeHeadways:

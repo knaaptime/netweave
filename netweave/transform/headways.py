@@ -46,7 +46,7 @@ def compute_headways(
     df = stop_times.merge(trips[["trip_id", "route_id"]], on="trip_id", how="left")
 
     # Convert departure_time to seconds
-    from netweave.gtfs.schedule import timetoseconds
+    from netweave.transform.schedule import timetoseconds
     df["departure_sec"] = timetoseconds(df["departure_time"])
 
     # Sort by route, stop, and time

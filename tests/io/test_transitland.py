@@ -9,8 +9,8 @@ import pandas as pd
 import pytest
 
 from netweave.exceptions import NoFeedsFoundError, TransitlandAPIError
-from netweave.gtfs.feed import GTFSFeed
-from netweave.gtfs.transitland import (
+from netweave.io.gtfs import GTFSFeed
+from netweave.io.transitland import (
     _bbox_to_string,
     _get_api_key,
     _parse_feeds,
@@ -187,7 +187,7 @@ class TestParseFeeds:
 
 @pytest.mark.usefixtures("mock_api_key")
 class TestSearchFeeds:
-    @patch("netweave.gtfs.transitland._request")
+    @patch("netweave.io.transitland._request")
     def test_by_bbox(self, mock_request, sample_feed_response):
         # First call is /stops verification, second is /feeds search
         stops_response = {
@@ -208,7 +208,7 @@ class TestSearchFeeds:
         assert params["bbox"] == "-122.5,37.7,-122.4,37.8"
         assert params["spec"] == "gtfs"
 
-    @patch("netweave.gtfs.transitland._request")
+    @patch("netweave.io.transitland._request")
     def test_by_search(self, mock_request, sample_feed_response):
         mock_request.return_value = sample_feed_response
         df = search_feeds(search="caltrain")
@@ -216,7 +216,7 @@ class TestSearchFeeds:
         _, params, _ = mock_request.call_args[0]
         assert params["search"] == "caltrain"
 
-    @patch("netweave.gtfs.transitland._request")
+    @patch("netweave.io.transitland._request")
     def test_pagination(self, mock_request, sample_feed_response_paginated):
         page2 = {
             "feeds": [
@@ -237,7 +237,7 @@ class TestSearchFeeds:
         assert len(df) == 2
         assert mock_request.call_count == 2
 
-    @patch("netweave.gtfs.transitland._request")
+    @patch("netweave.io.transitland._request")
     def test_no_results_raises(self, mock_request, empty_feed_response):
         mock_request.return_value = empty_feed_response
         with pytest.raises(NoFeedsFoundError, match="No GTFS feeds found"):
@@ -247,7 +247,7 @@ class TestSearchFeeds:
         with pytest.raises(ValueError, match="At least one of"):
             search_feeds()
 
-    @patch("netweave.gtfs.transitland._request")
+    @patch("netweave.io.transitland._request")
     def test_limit_respected(self, mock_request, sample_feed_response):
         # Return 2 feeds but limit to 1
         mock_request.return_value = sample_feed_response
@@ -262,8 +262,8 @@ class TestSearchFeeds:
 
 @pytest.mark.usefixtures("mock_api_key")
 class TestDownloadFeed:
-    @patch("netweave.gtfs.transitland.requests.get")
-    @patch("netweave.gtfs.transitland._load_feed_from_buffer")
+    @patch("netweave.io.transitland.requests.get")
+    @patch("netweave.io.transitland._load_feed_from_buffer")
     def test_in_memory(
         self,
         mock_load,
@@ -283,8 +283,8 @@ class TestDownloadFeed:
         assert isinstance(result, GTFSFeed)
         mock_get.assert_called_once()
 
-    @patch("netweave.gtfs.transitland.requests.get")
-    @patch("netweave.gtfs.transitland._load_feed_from_buffer")
+    @patch("netweave.io.transitland.requests.get")
+    @patch("netweave.io.transitland._load_feed_from_buffer")
     def test_with_output_dir(
         self,
         mock_load,
@@ -309,7 +309,7 @@ class TestDownloadFeed:
         assert path == output_dir / "f-test.zip"
         assert path.exists()
 
-    @patch("netweave.gtfs.transitland.requests.get")
+    @patch("netweave.io.transitland.requests.get")
     def test_download_failure(self, mock_get):
         from requests.exceptions import HTTPError
 
@@ -328,8 +328,8 @@ class TestDownloadFeed:
 
 @pytest.mark.usefixtures("mock_api_key")
 class TestFetchFeeds:
-    @patch("netweave.gtfs.transitland.search_feeds")
-    @patch("netweave.gtfs.transitland.download_feed")
+    @patch("netweave.io.transitland.search_feeds")
+    @patch("netweave.io.transitland.download_feed")
     def test_merge_true(
         self,
         mock_download,
@@ -354,8 +354,8 @@ class TestFetchFeeds:
         # Merged feed should have double the trips
         assert len(result.trips) == len(minimal_gtfs_feed.trips) * 2
 
-    @patch("netweave.gtfs.transitland.search_feeds")
-    @patch("netweave.gtfs.transitland.download_feed")
+    @patch("netweave.io.transitland.search_feeds")
+    @patch("netweave.io.transitland.download_feed")
     def test_merge_false(
         self,
         mock_download,
@@ -377,8 +377,8 @@ class TestFetchFeeds:
         assert len(result) == 1
         assert isinstance(result[0], GTFSFeed)
 
-    @patch("netweave.gtfs.transitland.search_feeds")
-    @patch("netweave.gtfs.transitland.download_feed")
+    @patch("netweave.io.transitland.search_feeds")
+    @patch("netweave.io.transitland.download_feed")
     def test_skip_no_redistribution(
         self,
         mock_download,
@@ -400,8 +400,8 @@ class TestFetchFeeds:
         # Only one feed should be downloaded (the other skipped)
         assert mock_download.call_count == 1
 
-    @patch("netweave.gtfs.transitland.search_feeds")
-    @patch("netweave.gtfs.transitland.download_feed")
+    @patch("netweave.io.transitland.search_feeds")
+    @patch("netweave.io.transitland.download_feed")
     def test_all_failed_raises(
         self,
         mock_download,
@@ -428,8 +428,8 @@ class TestFetchFeeds:
 
 @pytest.mark.usefixtures("mock_api_key")
 class TestTransitNetworkFromTransitland:
-    @patch("netweave.gtfs.transitland.fetch_feeds")
-    @patch("netweave.gtfs.transitland.create_transit_network")
+    @patch("netweave.io.transitland.fetch_feeds")
+    @patch("netweave.io.transitland.create_transit_network")
     def test_basic(
         self,
         mock_create,
@@ -464,7 +464,7 @@ class TestTransitNetworkFromTransitland:
 
 @pytest.mark.usefixtures("mock_api_key")
 class TestPolygonInput:
-    @patch("netweave.gtfs.transitland._request")
+    @patch("netweave.io.transitland._request")
     def test_geodataframe(self, mock_request, sample_feed_response):
         gpd = pytest.importorskip("geopandas")
         from shapely.geometry import box
@@ -489,7 +489,7 @@ class TestPolygonInput:
         _, params, _ = mock_request.call_args_list[1][0]
         assert params["bbox"] == "-122.5,37.7,-122.4,37.8"
 
-    @patch("netweave.gtfs.transitland._request")
+    @patch("netweave.io.transitland._request")
     def test_shapely_polygon(self, mock_request, sample_feed_response):
         from shapely.geometry import box
 

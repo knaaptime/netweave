@@ -4,7 +4,7 @@
 import pandas as pd
 import pytest
 
-from netweave.network.pandarm import format_for_pandarm, to_pandarm
+from netweave.integration.pandarm import format_for_pandarm, to_pandarm
 from netweave.types import IntegratedNetwork
 
 

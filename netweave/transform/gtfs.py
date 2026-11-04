@@ -8,9 +8,9 @@ from shapely.geometry import LineString
 
 from netweave._logging import _log, status
 from netweave.exceptions import EmptyNetworkError
-from netweave.gtfs.calendar import select_service_ids
-from netweave.gtfs.feed import GTFSFeed
-from netweave.gtfs.schedule import (
+from netweave.transform.calendar import select_service_ids
+from netweave.io.gtfs import GTFSFeed
+from netweave.transform.schedule import (
     interpolate_stop_times,
     select_by_time_range,
     timetoseconds,
@@ -68,7 +68,7 @@ def create_transit_network(
     feed.validate()
 
     if use_highest_freq_date:
-        from netweave.gtfs.calendar import highest_frequency_date
+        from netweave.transform.calendar import highest_frequency_date
         date = highest_frequency_date(feed.trips, feed.calendar, feed.calendar_dates)
 
     # Select active service IDs

@@ -4,7 +4,7 @@
 import pandas as pd
 import pytest
 
-from netweave.gtfs.feed import GTFSFeed
+from netweave.io.gtfs import GTFSFeed
 
 
 @pytest.fixture

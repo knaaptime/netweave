@@ -7,7 +7,7 @@ import pandarm
 import pytest
 
 from netweave.exceptions import EmptyNetworkError, NetworkIntegrationError
-from netweave.network.core import integrate
+from netweave.integration.core import integrate
 from netweave.types import OSMNetwork, TransitNetwork
 
 
@@ -133,7 +133,7 @@ class TestIntegrate:
 
     def test_pandarm_named_index_creates_node_id(self) -> None:
         """Test that _pandarm_to_osm_network handles named indices (e.g. 'osmid')."""
-        from netweave.network.core import _pandarm_to_osm_network
+        from netweave.integration.core import _pandarm_to_osm_network
 
         # Build a pandarm.Network whose nodes_df has a named index ("osmid")
         osm_nodes = pd.DataFrame({
@@ -165,7 +165,7 @@ class TestIntegrate:
 
     def test_pandarm_unnamed_index_creates_node_id(self) -> None:
         """Test that _pandarm_to_osm_network handles unnamed indices."""
-        from netweave.network.core import _pandarm_to_osm_network
+        from netweave.integration.core import _pandarm_to_osm_network
 
         # Build a pandarm.Network whose nodes_df has an unnamed integer index
         osm_nodes = pd.DataFrame({
@@ -194,7 +194,7 @@ class TestIntegrate:
 
     def test_pandarm_weight_conversion(self) -> None:
         """Test that pandarm meter-based weights are converted to minutes."""
-        from netweave.network.core import _pandarm_to_osm_network
+        from netweave.integration.core import _pandarm_to_osm_network
 
         # Build a pandarm.Network with meter-based weights (typical of from_gdf)
         osm_nodes = pd.DataFrame({
@@ -227,7 +227,7 @@ class TestIntegrate:
 
     def test_pandarm_minute_weights_preserved(self) -> None:
         """Test that pandarm weights already in minutes are not double-converted."""
-        from netweave.network.core import _pandarm_to_osm_network
+        from netweave.integration.core import _pandarm_to_osm_network
 
         # Build a pandarm.Network with minute-based weights (no length column)
         osm_nodes = pd.DataFrame({
@@ -254,7 +254,7 @@ class TestIntegrate:
 
     def test_weight_unit_meters(self) -> None:
         """Test weight_unit='meters' always converts regardless of mean."""
-        from netweave.network.core import _pandarm_to_osm_network
+        from netweave.integration.core import _pandarm_to_osm_network
 
         osm_nodes = pd.DataFrame({
             "x": [-122.0, -122.1],
@@ -282,7 +282,7 @@ class TestIntegrate:
 
     def test_weight_unit_minutes(self) -> None:
         """Test weight_unit='minutes' never converts even with large values."""
-        from netweave.network.core import _pandarm_to_osm_network
+        from netweave.integration.core import _pandarm_to_osm_network
 
         osm_nodes = pd.DataFrame({
             "x": [-122.0, -122.1],
@@ -309,7 +309,7 @@ class TestIntegrate:
 
     def test_weight_unit_seconds(self) -> None:
         """Test weight_unit='seconds' converts seconds to minutes."""
-        from netweave.network.core import _pandarm_to_osm_network
+        from netweave.integration.core import _pandarm_to_osm_network
 
         osm_nodes = pd.DataFrame({
             "x": [-122.0, -122.1],
@@ -335,7 +335,7 @@ class TestIntegrate:
 
     def test_weight_unit_auto_with_impedance_length(self) -> None:
         """Test weight_unit='auto' detects meters via impedance_names='length'."""
-        from netweave.network.core import _pandarm_to_osm_network
+        from netweave.integration.core import _pandarm_to_osm_network
 
         osm_nodes = pd.DataFrame({
             "x": [-122.0, -122.1],
@@ -364,7 +364,7 @@ class TestIntegrate:
 
     def test_weight_unit_invalid_raises(self) -> None:
         """Test that invalid weight_unit raises ValueError."""
-        from netweave.network.core import _pandarm_to_osm_network
+        from netweave.integration.core import _pandarm_to_osm_network
 
         osm_nodes = pd.DataFrame({
             "x": [-122.0, -122.1],

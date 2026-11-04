@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from netweave.exceptions import InvalidGTFS
-from netweave.gtfs.feed import GTFSFeed, load_feed
+from netweave.io.gtfs import GTFSFeed, load_feed
 
 
 class TestGTFSFeed:

@@ -1,4 +1,4 @@
-"""Network integration subpackage for netweave."""
+"""Acquire and read GTFS feeds."""
 
 
 import lazy_loader as lazy

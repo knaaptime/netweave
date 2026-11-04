@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from netweave.exceptions import TimeFormatError
-from netweave.gtfs.schedule import (
+from netweave.transform.schedule import (
     add_unique_ids,
     interpolate_stop_times,
     seconds_to_time,

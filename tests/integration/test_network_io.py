@@ -7,7 +7,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from netweave.network._io import load_network, save_network
+from netweave.integration._io import load_network, save_network
 from netweave.types import IntegratedNetwork
 
 

@@ -1,4 +1,4 @@
-"""GTFS subpackage for netweave."""
+"""Turn GTFS tables into a transit network priced in time."""
 
 
 import lazy_loader as lazy

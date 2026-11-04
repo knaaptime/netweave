@@ -7,12 +7,12 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from netweave.gtfs.feed import GTFSFeed
-from netweave.gtfs.network import create_transit_network
-from netweave.gtfs.headways import compute_headways
-from netweave.network.core import integrate
-from netweave.network._io import load_network, save_network
-from netweave.network.pandarm import to_pandarm
+from netweave.io.gtfs import GTFSFeed
+from netweave.transform.gtfs import create_transit_network
+from netweave.transform.headways import compute_headways
+from netweave.integration.core import integrate
+from netweave.integration._io import load_network, save_network
+from netweave.integration.pandarm import to_pandarm
 from netweave.types import IntegratedNetwork, OSMNetwork, TransitNetwork
 
 

@@ -6,7 +6,7 @@ import pytest
 from shapely.geometry import LineString
 
 from netweave.exceptions import EmptyNetworkError
-from netweave.gtfs.network import (
+from netweave.transform.gtfs import (
     _assign_shape_to_edges,
     _build_shape_geometries,
     _build_stop_geometries,

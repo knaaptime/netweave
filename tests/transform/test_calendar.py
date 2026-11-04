@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from netweave.exceptions import CalendarSelectionError
-from netweave.gtfs.calendar import highest_frequency_date, select_service_ids
+from netweave.transform.calendar import highest_frequency_date, select_service_ids
 
 
 class TestSelectServiceIDs:

@@ -15,8 +15,8 @@ from tqdm import tqdm
 from netweave._logging import _log, status
 from netweave.config import settings
 from netweave.exceptions import NoFeedsFoundError, TransitlandAPIError
-from netweave.gtfs.feed import GTFSFeed, load_feed
-from netweave.gtfs.network import create_transit_network
+from netweave.io.gtfs import GTFSFeed, load_feed
+from netweave.transform.gtfs import create_transit_network
 from netweave.types import TransitNetwork
 
 # ---------------------------------------------------------------------------
