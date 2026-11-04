@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 name = "netweave"
 dynamic = ["version"]
 description = "Weave together GTFS transit and OSM pedestrian networks for use in pandarm accessibility analyses."
-readme = "README.rst"
+readme = "README.md"
 keywords = ["gtfs", "transit", "osm", "pedestrian", "network", "accessibility", "routing"]
 license = {text = "BSD-3-Clause"}
 requires-python = ">=3.10"
