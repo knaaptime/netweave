@@ -11,11 +11,11 @@ dynamic = ["version"]
 description = "Weave together GTFS transit and OSM pedestrian networks for use in pandarm accessibility analyses."
 readme = "README.rst"
 keywords = ["gtfs", "transit", "osm", "pedestrian", "network", "accessibility", "routing"]
-license-files = ["License.txt"]
+license = {text = "BSD-3-Clause"}
 requires-python = ">=3.10"
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: GNU Affero General Public License v3",
+    "License :: OSI Approved :: BSD License",
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering :: GIS",
 ]
