@@ -8,8 +8,9 @@ pandarm's constructor keeps only coordinates, impedances and geometry, so netwea
 
 - `from_hdf5` and `to_crs` rebuild the network through the constructor, which drops the added columns, `metadata` and the restricted snapping. `save_hdf5` does write the added columns to the file.
 - `from_hdf5` tests `"crs" in store.keys()`, but HDFStore keys begin with `/`, so a projected network reloads as EPSG:4326.
+- `to_crs` leaves `Network.crs` at 4326 and sets the real CRS only on `nodes_df` and `edges_df`, so `integrate` reads it from `nodes_df`. It also keeps only the first impedance, and fails on a network without edge geometry.
 - There is no supported way to limit which nodes points snap to.
 - `initializeCategory` asserts `node_id << av.size()`, apparently meaning `<`. The assertion fails for node position 0, so a point of interest nearest the first node aborts the process.
 - Costs become fixed-point integers, so `inf`, `NaN` and `1e9` silently act as nearly free. `integrate` refuses them, but other callers are not protected.
 
-Until then, project the pedestrian network before integrating rather than calling `to_crs` afterwards.
+Until then, project the pedestrian network before integrating rather than calling `to_crs` afterwards, and keep `metadata` separately if a network will be saved.

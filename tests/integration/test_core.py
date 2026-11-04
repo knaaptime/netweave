@@ -10,6 +10,7 @@ import geopandas as gpd
 import numpy as np
 import pandarm
 import pandas as pd
+import pyproj
 import pytest
 from helpers import schedule
 from shapely.geometry import LineString, Point
@@ -277,6 +278,14 @@ class TestCoordinateSystems:
         network = integrate(transit_from(EVERY_TWENTY), street())
         assert network.crs == UTM
         assert network.edges_df.crs.to_epsg() == UTM
+
+    def test_network_reprojected_by_pandarm_is_read_correctly(self, transit_from) -> None:
+        # pandarm's to_crs leaves Network.crs at 4326 and sets the real CRS on nodes_df.
+        reprojected = street().to_crs(4326).to_crs(UTM)
+        network = integrate(transit_from(EVERY_TWENTY), reprojected)
+        assert pyproj.CRS.from_user_input(network.crs).to_epsg() == UTM
+        assert network.nodes_df.loc[stop_node(network, "A"), "x"] == pytest.approx(X0, abs=0.01)
+        assert cost(network, WEST, EAST) == pytest.approx(15.0, abs=0.01)
 
     def test_stops_are_reprojected_into_it(self, transit_from) -> None:
         network = integrate(transit_from(EVERY_TWENTY), street())

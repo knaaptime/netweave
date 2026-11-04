@@ -100,7 +100,8 @@ def integrate(
     if not pd.api.types.is_integer_dtype(walk_nodes.index):
         raise NetworkIntegrationError("The pedestrian network must have integer node IDs")
 
-    crs = pyproj.CRS.from_user_input(pedestrian.crs)
+    # Network.crs can be stale: pandarm's to_crs sets the real CRS only on its tables.
+    crs = pyproj.CRS.from_user_input(pedestrian.nodes_df.crs)
     first_transit_id = int(walk_nodes.index.max()) + 1
     transit_nodes, transit_edges = _transit_tables(transit, crs, first_transit_id)
 
@@ -139,7 +140,7 @@ def integrate(
         "netweave_version": netweave.__version__,
     }
     status(f"Integrated network: {len(nodes)} nodes, {len(edges)} edges")
-    return build_network(nodes, edges, pedestrian.crs, metadata, len(walk_nodes))
+    return build_network(nodes, edges, crs, metadata, len(walk_nodes))
 
 
 def _transit_tables(
