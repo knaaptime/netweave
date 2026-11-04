@@ -1,188 +1,170 @@
-"""GTFS calendar and service ID selection."""
+"""Choose which GTFS service a transit network represents."""
 
-
-import datetime
-from typing import Optional
+import warnings
 
 import pandas as pd
 
-from netweave._logging import status
 from netweave.exceptions import CalendarSelectionError
+from netweave.io.gtfs import GTFSFeed
 
-_DAY_MAP: dict[str, int] = {
-    "monday": 0,
-    "tuesday": 1,
-    "wednesday": 2,
-    "thursday": 3,
-    "friday": 4,
-    "saturday": 5,
-    "sunday": 6,
-}
+DAYS: tuple[str, ...] = (
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+)
 
 
-def select_service_ids(
-    calendar: pd.DataFrame,
-    calendar_dates: pd.DataFrame,
-    day: Optional[str] = None,
-    date: Optional[str] = None,
-    date_range: Optional[tuple[str, str]] = None,
-    calendar_dates_lookup: Optional[dict[str, str | list[str]]] = None,
-) -> list[str]:
-    """Select active service IDs based on calendar and calendar_dates.
+def _exceptions(calendar_dates: pd.DataFrame, exception_type: str) -> pd.DataFrame:
+    """Return the service and date of one kind of calendar exception."""
+    if calendar_dates.empty:
+        return pd.DataFrame(columns=["service_id", "date"])
+    kept = calendar_dates["exception_type"].astype(str) == exception_type
+    return calendar_dates.loc[kept, ["service_id", "date"]]
 
-    Parameters
-    ----------
-    calendar : pandas.DataFrame
-        GTFS calendar table.
-    calendar_dates : pandas.DataFrame
-        GTFS calendar_dates table.
-    day : str, optional
-        Day of week (e.g., 'monday').
-    date : str, optional
-        Specific date in YYYYMMDD format.
-    date_range : tuple[str, str], optional
-        Date range as (start, end) in YYYYMMDD format.
-    calendar_dates_lookup : dict, optional
-        Exact-match lookup for calendar_dates columns.
 
-    Returns
-    -------
-    list[str]
-        Active service IDs.
-
-    Raises
-    ------
-    CalendarSelectionError
-        If no service IDs are selected.
-    """
-    service_ids: set[str] = set()
-
-    if not calendar.empty and day is not None:
-        day_col = day.lower()
-        if day_col not in _DAY_MAP:
-            raise ValueError(f"Invalid day: {day}. Must be one of {_DAY_MAP.keys()}")
-        mask = calendar[day_col].astype(str) == "1"
-        if date is not None:
-            mask &= (calendar["start_date"] <= date) & (calendar["end_date"] >= date)
-        elif date_range is not None:
-            start, end = date_range
-            mask &= (calendar["start_date"] <= end) & (calendar["end_date"] >= start)
-        service_ids.update(calendar.loc[mask, "service_id"].unique())
-
-    if not calendar_dates.empty:
-        cd_mask = calendar_dates["exception_type"].astype(str) == "1"
-        if date is not None:
-            cd_mask &= calendar_dates["date"] == date
-        elif date_range is not None:
-            start, end = date_range
-            cd_mask &= (calendar_dates["date"] >= start) & (calendar_dates["date"] <= end)
-        elif day is not None:
-            # Select dates that fall on the given day of week
-            target_dow = _DAY_MAP[day.lower()]
-            dates = pd.to_datetime(calendar_dates["date"], format="%Y%m%d")
-            cd_mask &= dates.dt.dayofweek == target_dow
-        if calendar_dates_lookup is not None:
-            for col, val in calendar_dates_lookup.items():
-                if isinstance(val, list):
-                    cd_mask &= calendar_dates[col].isin(val)
-                else:
-                    cd_mask &= calendar_dates[col] == val
-        service_ids.update(calendar_dates.loc[cd_mask, "service_id"].unique())
-
-    if not service_ids:
-        raise CalendarSelectionError(
-            "No active service IDs found for the given selection criteria."
+def _services_on(calendar: pd.DataFrame, calendar_dates: pd.DataFrame, date: str) -> set[str]:
+    """Return the services running on one date: the weekly pattern plus its exceptions."""
+    active: set[str] = set()
+    if not calendar.empty:
+        weekday = DAYS[pd.to_datetime(date, format="%Y%m%d").dayofweek]
+        runs = (
+            (calendar[weekday].astype(str) == "1")
+            & (calendar["start_date"] <= date)
+            & (calendar["end_date"] >= date)
         )
+        active |= set(calendar.loc[runs, "service_id"])
 
-    status(f"Selected {len(service_ids)} active service ID(s)")
-    return sorted(service_ids)
+    added = _exceptions(calendar_dates, "1")
+    removed = _exceptions(calendar_dates, "2")
+    active |= set(added.loc[added["date"] == date, "service_id"])
+    active -= set(removed.loc[removed["date"] == date, "service_id"])
+    return active
 
 
-def highest_frequency_date(
+def _busiest_date(
     trips: pd.DataFrame,
     calendar: pd.DataFrame,
     calendar_dates: pd.DataFrame,
-) -> str:
-    """Find the date with the highest number of trips.
+    day: str,
+) -> str | None:
+    """Return the date on one weekday with the most trips, the earliest if several tie."""
+    pairs: list[pd.DataFrame] = []
+    if not calendar.empty:
+        frequency = f"W-{day[:3].upper()}"
+        for row in calendar[calendar[day].astype(str) == "1"].itertuples():
+            dates = pd.date_range(
+                pd.to_datetime(row.start_date, format="%Y%m%d"),
+                pd.to_datetime(row.end_date, format="%Y%m%d"),
+                freq=frequency,
+            )
+            pairs.append(
+                pd.DataFrame({"service_id": row.service_id, "date": dates.strftime("%Y%m%d")})
+            )
+
+    added = _exceptions(calendar_dates, "1")
+    if not added.empty:
+        weekdays = pd.to_datetime(added["date"], format="%Y%m%d").dt.dayofweek
+        pairs.append(added[weekdays == DAYS.index(day)])
+
+    if not pairs:
+        return None
+
+    scheduled = pd.concat(pairs, ignore_index=True).drop_duplicates()
+    removed = _exceptions(calendar_dates, "2").assign(removed=True)
+    scheduled = scheduled.merge(removed, how="left", on=["service_id", "date"])
+    scheduled = scheduled[scheduled["removed"].isna()]
+
+    trip_counts = trips.groupby("service_id").size().rename("trips").reset_index()
+    per_date = scheduled.merge(trip_counts, on="service_id").groupby("date")["trips"].sum()
+    if per_date.empty:
+        return None
+    return str(
+        per_date.reset_index()
+        .sort_values(["trips", "date"], ascending=[False, True])["date"]
+        .iloc[0]
+    )
+
+
+def _of_feed(table: pd.DataFrame, prefix: str) -> pd.DataFrame:
+    """Return the rows of a merged table that belong to one feed."""
+    return table if table.empty else table[table["feed"] == prefix]
+
+
+def select_service(
+    feed: GTFSFeed,
+    day: str | None = None,
+    date: str | None = None,
+) -> tuple[set[str], dict[str, str | None]]:
+    """Choose the services a transit network represents, one date per original feed.
+
+    ``date`` means that date in every feed. ``day`` means the busiest such
+    weekday in each feed, chosen separately because the validity of different
+    agencies' feeds need not overlap, and never a union of several dates, which
+    would mix seasons and shorten headways that no rider experiences.
 
     Parameters
     ----------
-    trips : pandas.DataFrame
-        GTFS trips table.
-    calendar : pandas.DataFrame
-        GTFS calendar table.
-    calendar_dates : pandas.DataFrame
-        GTFS calendar_dates table.
+    feed : GTFSFeed
+        A merged feed.
+    day : str, optional
+        Day of the week, such as ``"monday"``.
+    date : str, optional
+        Date as ``YYYYMMDD``.
 
     Returns
     -------
-    str
-        Date in YYYYMMDD format with the most trips.
+    tuple
+        The selected service IDs, and the date used for each feed prefix, which
+        is None for a feed with no service.
+
+    Raises
+    ------
+    ValueError
+        If not exactly one of ``day`` and ``date`` is given, or if either is
+        malformed.
+    CalendarSelectionError
+        If no feed has any service.
     """
-    if calendar.empty and calendar_dates.empty:
-        raise CalendarSelectionError("Both calendar and calendar_dates are empty")
+    if (day is None) == (date is None):
+        raise ValueError("Pass exactly one of day or date")
+    if day is not None:
+        day = day.lower()
+        if day not in DAYS:
+            raise ValueError(f"Unknown day '{day}': must be one of {', '.join(DAYS)}")
+    else:
+        try:
+            pd.to_datetime(date, format="%Y%m%d")
+        except ValueError as error:
+            raise ValueError(f"Date '{date}' must be written as YYYYMMDD") from error
 
-    # Compute trips per service_id
-    trip_counts = trips.groupby("service_id").size().reset_index(name="trip_count")
+    requested = day or date
+    service_ids: set[str] = set()
+    dates: dict[str, str | None] = {}
+    without_service: list[str] = []
+    for source in feed.sources:
+        prefix = source["prefix"]
+        trips = _of_feed(feed.trips, prefix)
+        calendar = _of_feed(feed.calendar, prefix)
+        calendar_dates = _of_feed(feed.calendar_dates, prefix)
+        chosen = date or _busiest_date(trips, calendar, calendar_dates, day)
+        active = set() if chosen is None else _services_on(calendar, calendar_dates, chosen)
+        if trips["service_id"].isin(active).any():
+            service_ids |= active
+            dates[prefix] = chosen
+        else:
+            without_service.append(prefix)
+            dates[prefix] = None
 
-    all_service_dates: list[pd.DataFrame] = []
-
-    # Build daily service coverage from calendar
-    if not calendar.empty:
-        cal = calendar.copy()
-        cal["start_date"] = pd.to_datetime(cal["start_date"], format="%Y%m%d")
-        cal["end_date"] = pd.to_datetime(cal["end_date"], format="%Y%m%d")
-
-        # Get overall date range
-        min_date = cal["start_date"].min()
-        max_date = cal["end_date"].max()
-        all_dates = pd.date_range(min_date, max_date, freq="D")
-
-        # Create date -> day_of_week mapping
-        dow_map = {0: "monday", 1: "tuesday", 2: "wednesday", 3: "thursday",
-                   4: "friday", 5: "saturday", 6: "sunday"}
-        date_df = pd.DataFrame({"date_dt": all_dates})
-        date_df["dow"] = date_df["date_dt"].dt.dayofweek.map(dow_map)
-        date_df["date"] = date_df["date_dt"].dt.strftime("%Y%m%d")
-
-        # Melt calendar to (service_id, dow, start_date, end_date)
-        day_cols = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
-        cal_melted = cal.melt(
-            id_vars=["service_id", "start_date", "end_date"],
-            value_vars=day_cols,
-            var_name="dow",
-            value_name="active",
+    if not service_ids:
+        raise CalendarSelectionError(f"No feed has service on {requested}")
+    for prefix in without_service:
+        warnings.warn(
+            f"Feed '{prefix}' has no service on {requested}, so it adds nothing to this network",
+            UserWarning,
+            stacklevel=3,
         )
-        cal_melted = cal_melted[cal_melted["active"].astype(str) == "1"]
-
-        # Merge with dates and filter by range
-        cal_expanded = cal_melted.merge(date_df, on="dow", how="inner")
-        cal_expanded = cal_expanded[
-            (cal_expanded["date_dt"] >= cal_expanded["start_date"]) &
-            (cal_expanded["date_dt"] <= cal_expanded["end_date"])
-        ][["service_id", "date"]]
-
-        all_service_dates.append(cal_expanded)
-
-    # Add calendar_dates exceptions
-    if not calendar_dates.empty:
-        cd = calendar_dates[calendar_dates["exception_type"].astype(str) == "1"][["service_id", "date"]].copy()
-        all_service_dates.append(cd)
-
-    if not all_service_dates:
-        raise CalendarSelectionError("No active service dates found")
-
-    # Combine all (service_id, date) pairs
-    combined = pd.concat(all_service_dates, ignore_index=True).drop_duplicates()
-
-    # Count trips per date
-    date_trip_counts = combined.merge(trip_counts, on="service_id", how="inner")
-    date_totals = date_trip_counts.groupby("date")["trip_count"].sum().reset_index()
-
-    if date_totals.empty:
-        raise CalendarSelectionError("No trips found for any active service date")
-
-    best_date = date_totals.loc[date_totals["trip_count"].idxmax(), "date"]
-    best_count = date_totals["trip_count"].max()
-    status(f"Highest frequency date: {best_date} with {best_count} trips")
-    return str(best_date)
+    return service_ids, dates

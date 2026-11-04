@@ -1,8 +1,7 @@
 """Shared types, constants, and protocols for netweave."""
 
-
-from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from dataclasses import dataclass, field
+from typing import Any, Protocol, runtime_checkable
 
 import geopandas as gpd
 import pandas as pd
@@ -13,15 +12,17 @@ import pandas as pd
 METERS_PER_MILE: float = 1609.344
 DEFAULT_WALK_SPEED_MPH: float = 3.0
 
+
 # ---------------------------------------------------------------------------
 # Network dataclasses
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True, slots=True)
 class TransitNetwork:
-    """Container for a transit network's edges and nodes."""
+    """Container for a transit network's edges and nodes, and a record of its inputs."""
 
     edges: pd.DataFrame
     nodes: pd.DataFrame
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not isinstance(self.edges, (pd.DataFrame, gpd.GeoDataFrame)):

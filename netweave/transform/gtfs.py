@@ -8,8 +8,8 @@ from shapely.geometry import LineString
 
 from netweave._logging import _log, status
 from netweave.exceptions import EmptyNetworkError
-from netweave.transform.calendar import select_service_ids
-from netweave.io.gtfs import GTFSFeed
+from netweave.io.gtfs import GTFSFeed, merge_feeds
+from netweave.transform.calendar import select_service
 from netweave.transform.schedule import (
     interpolate_stop_times,
     select_by_time_range,
@@ -19,35 +19,28 @@ from netweave.types import TransitNetwork
 
 
 def create_transit_network(
-    feed: GTFSFeed,
+    feed: GTFSFeed | list[GTFSFeed],
+    *,
     day: str | None = None,
-    timerange: tuple[str, str] | None = None,
     date: str | None = None,
-    date_range: tuple[str, str] | None = None,
-    calendar_dates_lookup: dict[str, str | list[str]] | None = None,
-    use_highest_freq_date: bool = False,
+    timerange: tuple[str, str] | None = None,
     simplify: bool = False,
     interpolate_missing: bool = True,
     prune: tuple[float, float, float, float] | Any | None = None,
 ) -> TransitNetwork:
-    """Create a transit network from a GTFS feed.
+    """Create a transit network from one or more GTFS feeds.
 
     Parameters
     ----------
-    feed : GTFSFeed
-        Validated GTFS feed.
+    feed : GTFSFeed or list of GTFSFeed
+        The feed or feeds to build from. Several feeds are merged first.
     day : str, optional
-        Day of week (e.g., 'monday').
+        Day of the week, such as ``"monday"``. Each feed uses its busiest such
+        weekday. Pass exactly one of ``day`` and ``date``.
+    date : str, optional
+        Date as ``YYYYMMDD``, used in every feed.
     timerange : tuple[str, str], optional
         Time range as (start, end) in HH:MM:SS.
-    date : str, optional
-        Specific date in YYYYMMDD format.
-    date_range : tuple[str, str], optional
-        Date range as (start, end) in YYYYMMDD.
-    calendar_dates_lookup : dict, optional
-        Exact-match lookup for calendar_dates.
-    use_highest_freq_date : bool, optional
-        If True, automatically select the date with the most trips.
     simplify : bool, optional
         If True, simplify the network by removing duplicate edges.
     interpolate_missing : bool, optional
@@ -65,21 +58,10 @@ def create_transit_network(
     -------
     TransitNetwork
     """
+    feed = merge_feeds(feed if isinstance(feed, list) else [feed])
     feed.validate()
 
-    if use_highest_freq_date:
-        from netweave.transform.calendar import highest_frequency_date
-        date = highest_frequency_date(feed.trips, feed.calendar, feed.calendar_dates)
-
-    # Select active service IDs
-    service_ids = select_service_ids(
-        feed.calendar,
-        feed.calendar_dates,
-        day=day,
-        date=date,
-        date_range=date_range,
-        calendar_dates_lookup=calendar_dates_lookup,
-    )
+    service_ids, service_dates = select_service(feed, day=day, date=date)
 
     # Select trips
     active_trips = feed.trips[feed.trips["service_id"].isin(service_ids)].copy()
@@ -130,8 +112,16 @@ def create_transit_network(
     edges["net_type"] = "transit"
     nodes["net_type"] = "transit"
 
+    metadata = {
+        "feeds": [
+            {**source, "service_date": service_dates[source["prefix"]]} for source in feed.sources
+        ],
+        "missing_feeds": feed.missing,
+        "time_window": list(timerange) if timerange is not None else None,
+    }
+
     status(f"Transit network: {len(nodes)} nodes, {len(edges)} edges")
-    return TransitNetwork(edges=edges, nodes=nodes)
+    return TransitNetwork(edges=edges, nodes=nodes, metadata=metadata)
 
 
 def _build_edges(
@@ -188,18 +178,17 @@ def _build_edges(
         "stop_id": "from",
         "next_stop_id": "to",
         "trip_id": "unique_trip_id",
-        "route_id": "unique_route_id",
     })
 
     # Convert back to int after shift introduced NaN (all NaN rows were filtered out)
     import contextlib
-    for col in ["from", "to", "unique_trip_id", "unique_route_id", "route_type"]:
+    for col in ["from", "to", "unique_trip_id", "route_type"]:
         if col in edges.columns:
             with contextlib.suppress(ValueError, TypeError):
                 edges[col] = edges[col].astype("int64")
 
     # Select and order columns
-    edge_cols = ["from", "to", "weight", "unique_trip_id", "unique_route_id", "route_type"]
+    edge_cols = ["from", "to", "weight", "unique_trip_id", "route_id", "route_type"]
     edges = edges[[c for c in edge_cols if c in edges.columns]].copy()
 
     return edges.reset_index(drop=True)

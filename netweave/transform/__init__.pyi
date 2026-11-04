@@ -2,8 +2,7 @@
 
 __all__: list[str]
 
-from .calendar import highest_frequency_date as highest_frequency_date
-from .calendar import select_service_ids as select_service_ids
+from .calendar import select_service as select_service
 from .gtfs import create_transit_network as create_transit_network
 from .headways import compute_headways as compute_headways
 from .schedule import add_unique_ids as add_unique_ids
