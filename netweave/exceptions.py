@@ -5,10 +5,6 @@ class NetweaveError(Exception):
     """Base exception for all netweave errors."""
 
 
-# Backward-compatibility alias
-UrbanAccessError = NetweaveError
-
-
 class InvalidGTFS(NetweaveError):  # noqa: N818
     """Raised when a GTFS feed fails validation."""
 

@@ -21,7 +21,6 @@ from .exceptions import NetworkIntegrationError as NetworkIntegrationError
 from .exceptions import NoFeedsFoundError as NoFeedsFoundError
 from .exceptions import TimeFormatError as TimeFormatError
 from .exceptions import TransitlandAPIError as TransitlandAPIError
-from .exceptions import UrbanAccessError as UrbanAccessError
 
 # Pipeline
 from .integration.core import integrate as integrate
