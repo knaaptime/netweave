@@ -1,512 +1,305 @@
-"""Tests for the Transitland API client."""
-
+"""Tests for the Transitland client, with only HTTP replaced."""
 
 import io
+import time
 import zipfile
-from unittest.mock import MagicMock, patch
 
-import pandas as pd
+import geopandas as gpd
 import pytest
+import requests
+from shapely.geometry import box
 
 from netweave.exceptions import NoFeedsFoundError, TransitlandAPIError
 from netweave.io.gtfs import GTFSFeed
-from netweave.io.transitland import (
-    _bbox_to_string,
-    _get_api_key,
-    _parse_feeds,
-    download_feed,
-    fetch_feeds,
-    search_feeds,
-    transit_network_from_transitland,
-)
-from netweave.types import TransitNetwork
+from netweave.io.transitland import fetch_feeds, search_feeds
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
+KEY = "secret-test-key"
 
 
-@pytest.fixture
-def mock_api_key(monkeypatch):
-    """Set a dummy TRANSITLAND_API_KEY environment variable."""
-    monkeypatch.setenv("TRANSITLAND_API_KEY", "test_key_123")
-    yield
-    monkeypatch.delenv("TRANSITLAND_API_KEY", raising=False)
-
-
-@pytest.fixture
-def sample_feed_response():
-    """Return a sample Transitland feed search response."""
+def feed_record(onestop_id, name=None, key=1, redistribution="yes"):
     return {
-        "feeds": [
-            {
-                "id": 1,
-                "onestop_id": "f-sf~bay~area~rg",
-                "name": "Bay Area Rapid Transit",
-                "spec": "gtfs",
-                "urls": {
-                    "static_current": "https://example.com/bart.zip",
-                    "static_historic": [],
-                },
-                "license": {
-                    "spdx_identifier": "CC-BY-4.0",
-                    "url": "https://example.com/license",
-                    "redistribution_allowed": "yes",
-                    "commercial_use_allowed": "yes",
-                    "create_derived_product": "yes",
-                },
-                "feed_state": {"fetched_at": "2024-01-01T00:00:00Z"},
-            },
-            {
-                "id": 2,
-                "onestop_id": "f-sf~muni",
-                "name": "SF Muni",
-                "spec": "gtfs",
-                "urls": {
-                    "static_current": "https://example.com/muni.zip",
-                    "static_historic": [],
-                },
-                "license": {
-                    "redistribution_allowed": "yes",
-                },
-                "feed_state": {},
-            },
-        ],
-        "meta": {"after": None},
+        "id": key,
+        "onestop_id": onestop_id,
+        "name": name,
+        "spec": "gtfs",
+        "urls": {"static_current": "https://example.com/feed.zip"},
+        "license": {"redistribution_allowed": redistribution},
+        "feed_state": {},
     }
 
 
-@pytest.fixture
-def sample_feed_response_paginated():
-    """Return a paginated feed search response (page 1 of 2)."""
-    return {
-        "feeds": [
-            {
-                "id": 1,
-                "onestop_id": "f-page1",
-                "name": "Page 1 Feed",
-                "spec": "gtfs",
-                "urls": {"static_current": "https://example.com/p1.zip"},
-                "license": {"redistribution_allowed": "yes"},
-                "feed_state": {},
-            },
-        ],
-        "meta": {"after": 999},
-    }
+def stop_in(onestop_id):
+    return {"feed_version": {"feed": {"onestop_id": onestop_id}}}
+
+
+class FakeResponse:
+    def __init__(self, url, params, payload=None, content=b"", status=200):
+        self.url = f"{url}?apikey={(params or {}).get('apikey')}"
+        self.payload, self.content, self.status_code = payload, content, status
+        self.headers = {"content-length": str(len(content))}
+
+    def json(self):
+        return self.payload
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.exceptions.HTTPError(f"{self.status_code} Error for url: {self.url}")
+
+    def iter_content(self, chunk_size):  # noqa: ARG002
+        yield self.content
+
+
+class FakeTransitland:
+    """Stand in for the three Transitland endpoints the client uses."""
+
+    def __init__(self, feeds=None, stop_pages=None, feed_pages=None, downloads=None, slow=()):
+        self.feed_pages = feed_pages or {None: (feeds or [], None)}
+        self.stop_pages = stop_pages or {None: ([], None)}
+        self.downloads = downloads or {}
+        self.slow = slow
+        self.calls = []
+
+    def get(self, url, params=None, **_):
+        params = params or {}
+        self.calls.append((url, dict(params)))
+        if url.endswith("/download_latest_feed_version"):
+            onestop_id = url.split("/feeds/")[1].split("/")[0]
+            if onestop_id in self.slow:
+                time.sleep(0.05)
+            download = self.downloads.get(onestop_id, 404)
+            if isinstance(download, int):
+                return FakeResponse(url, params, status=download)
+            return FakeResponse(url, params, content=download)
+        pages, field = (
+            (self.stop_pages, "stops") if url.endswith("/stops") else (self.feed_pages, "feeds")
+        )
+        records, after = pages.get(params.get("after"), ([], None))
+        return FakeResponse(url, params, payload={field: records, "meta": {"after": after}})
+
+    def params_for(self, suffix):
+        return [params for url, params in self.calls if url.endswith(suffix)]
 
 
 @pytest.fixture
-def empty_feed_response():
-    """Return an empty feed search response."""
-    return {"feeds": [], "meta": {"after": None}}
+def install(monkeypatch):
+    """Replace requests.get with a fake Transitland, and disable retry delays."""
+
+    def _install(api):
+        monkeypatch.setattr("netweave.io.transitland.requests.get", api.get)
+        monkeypatch.setattr("netweave.io.transitland._RETRY_BACKOFF", 0.0)
+        return api
+
+    return _install
 
 
 @pytest.fixture
-def mock_gtfs_zip_bytes(minimal_gtfs_feed):
-    """Return a GTFS zip file as bytes from a minimal feed."""
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        for attr in [
-            "agency", "routes", "trips", "stop_times", "stops", "calendar",
-        ]:
-            df = getattr(minimal_gtfs_feed, attr)
-            if not df.empty:
-                csv_bytes = df.to_csv(index=False).encode("utf-8")
-                zf.writestr(f"{attr}.txt", csv_bytes)
-    buffer.seek(0)
-    return buffer.getvalue()
+def gtfs_zip(line_tables, write_feed):
+    """Return the bytes of a valid GTFS zip."""
+    counter = iter(range(100))
+
+    def _zip(**kwargs):
+        folder = write_feed(line_tables(n_stops=2, **kwargs), name=f"zip{next(counter)}")
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            for path in folder.iterdir():
+                archive.write(path, path.name)
+        return buffer.getvalue()
+
+    return _zip
 
 
-# ---------------------------------------------------------------------------
-# _get_api_key
-# ---------------------------------------------------------------------------
-
-
-class TestGetApiKey:
-    def test_from_parameter(self):
-        assert _get_api_key("my_key") == "my_key"
-
-    @pytest.mark.usefixtures("mock_api_key")
-    def test_from_env(self):
-        assert _get_api_key() == "test_key_123"
-
-    @pytest.mark.usefixtures("mock_api_key")
-    def test_parameter_overrides_env(self):
-        assert _get_api_key("override_key") == "override_key"
-
-    def test_missing_raises(self, monkeypatch):
-        monkeypatch.delenv("TRANSITLAND_API_KEY", raising=False)
-        with pytest.raises(TransitlandAPIError, match="API key is required"):
-            _get_api_key()
-
-
-# ---------------------------------------------------------------------------
-# _bbox_to_string
-# ---------------------------------------------------------------------------
-
-
-class TestBboxToString:
-    def test_basic(self):
-        bbox = (-122.5, 37.7, -122.4, 37.8)
-        assert _bbox_to_string(bbox) == "-122.5,37.7,-122.4,37.8"
-
-    def test_negative_values(self):
-        bbox = (18.3, -33.9, 18.5, -33.8)
-        assert _bbox_to_string(bbox) == "18.3,-33.9,18.5,-33.8"
-
-
-# ---------------------------------------------------------------------------
-# _parse_feeds
-# ---------------------------------------------------------------------------
-
-
-class TestParseFeeds:
-    def test_empty(self):
-        df = _parse_feeds([])
-        assert df.empty
-
-    def test_basic(self, sample_feed_response):
-        df = _parse_feeds(sample_feed_response["feeds"])
-        assert len(df) == 2
-        assert list(df.columns) == [
-            "feed_key", "onestop_id", "name", "spec", "static_current",
-            "static_historic", "realtime_vehicle_positions", "realtime_trip_updates",
-            "realtime_alerts", "license_spdx", "license_url",
-            "license_redistribution", "license_commercial", "license_create_derived",
-            "feed_state",
-        ]
-        assert df.loc[0, "feed_key"] == 1
-        assert df.loc[0, "onestop_id"] == "f-sf~bay~area~rg"
-        assert df.loc[0, "license_redistribution"] == "yes"
-
-
-# ---------------------------------------------------------------------------
-# search_feeds
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.usefixtures("mock_api_key")
 class TestSearchFeeds:
-    @patch("netweave.io.transitland._request")
-    def test_by_bbox(self, mock_request, sample_feed_response):
-        # First call is /stops verification, second is /feeds search
-        stops_response = {
-            "stops": [
-                {"feed_version": {"feed": {"onestop_id": "f-sf~bay~area~rg"}}},
-                {"feed_version": {"feed": {"onestop_id": "f-sf~muni"}}},
-            ],
-            "meta": {"after": None},
-        }
-        mock_request.side_effect = [stops_response, sample_feed_response]
-        df = search_feeds(bbox=(-122.5, 37.7, -122.4, 37.8))
-        assert len(df) == 2
-        assert mock_request.call_count == 2
-        # First call should be to /stops
-        assert "stops" in mock_request.call_args_list[0][0][0]
-        # Second call should be to /feeds
-        _, params, _ = mock_request.call_args_list[1][0]
-        assert params["bbox"] == "-122.5,37.7,-122.4,37.8"
-        assert params["spec"] == "gtfs"
+    def test_area_search_keeps_only_feeds_with_stops_in_the_area(self, install) -> None:
+        api = install(
+            FakeTransitland(
+                feeds=[feed_record("f-near", "Near"), feed_record("f-far", "Far")],
+                stop_pages={None: ([stop_in("f-near")], None)},
+            )
+        )
+        table = search_feeds(bbox=(-122.5, 37.7, -122.3, 37.9), api_key=KEY)
+        assert table["onestop_id"].tolist() == ["f-near"]
+        assert api.params_for("/stops")[0]["bbox"] == "-122.5,37.7,-122.3,37.9"
 
-    @patch("netweave.io.transitland._request")
-    def test_by_search(self, mock_request, sample_feed_response):
-        mock_request.return_value = sample_feed_response
-        df = search_feeds(search="caltrain")
-        assert len(df) == 2
-        _, params, _ = mock_request.call_args[0]
-        assert params["search"] == "caltrain"
+    def test_area_search_can_skip_the_stop_check(self, install) -> None:
+        api = install(FakeTransitland(feeds=[feed_record("f-a")]))
+        table = search_feeds(bbox=(0, 0, 1, 1), api_key=KEY, verify_stops=False)
+        assert table["onestop_id"].tolist() == ["f-a"]
+        assert api.params_for("/stops") == []
 
-    @patch("netweave.io.transitland._request")
-    def test_pagination(self, mock_request, sample_feed_response_paginated):
-        page2 = {
-            "feeds": [
-                {
-                    "id": 2,
-                    "onestop_id": "f-page2",
-                    "name": "Page 2 Feed",
-                    "spec": "gtfs",
-                    "urls": {"static_current": "https://example.com/p2.zip"},
-                    "license": {"redistribution_allowed": "yes"},
-                    "feed_state": {},
-                },
-            ],
-            "meta": {"after": None},
-        }
-        mock_request.side_effect = [sample_feed_response_paginated, page2]
-        df = search_feeds(search="test", limit=100)
-        assert len(df) == 2
-        assert mock_request.call_count == 2
+    def test_text_search_needs_no_stop_check(self, install) -> None:
+        api = install(FakeTransitland(feeds=[feed_record("f-a")]))
+        search_feeds(search="caltrain", api_key=KEY)
+        assert api.params_for("/feeds")[0]["search"] == "caltrain"
+        assert api.params_for("/stops") == []
 
-    @patch("netweave.io.transitland._request")
-    def test_no_results_raises(self, mock_request, empty_feed_response):
-        mock_request.return_value = empty_feed_response
-        with pytest.raises(NoFeedsFoundError, match="No GTFS feeds found"):
-            search_feeds(search="nonexistent")
+    def test_follows_pagination(self, install) -> None:
+        install(
+            FakeTransitland(
+                feed_pages={
+                    None: ([feed_record("f-1")], 99),
+                    99: ([feed_record("f-2")], None),
+                }
+            )
+        )
+        assert search_feeds(search="x", api_key=KEY)["onestop_id"].tolist() == ["f-1", "f-2"]
 
-    def test_no_filter_raises(self):
-        with pytest.raises(ValueError, match="At least one of"):
-            search_feeds()
+    def test_respects_the_limit(self, install) -> None:
+        install(FakeTransitland(feeds=[feed_record(f"f-{i}") for i in range(5)]))
+        assert len(search_feeds(search="x", limit=2, api_key=KEY)) == 2
 
-    @patch("netweave.io.transitland._request")
-    def test_limit_respected(self, mock_request, sample_feed_response):
-        # Return 2 feeds but limit to 1
-        mock_request.return_value = sample_feed_response
-        df = search_feeds(search="test", limit=1)
-        assert len(df) == 1
+    def test_no_matches_raises(self, install) -> None:
+        install(FakeTransitland())
+        with pytest.raises(NoFeedsFoundError):
+            search_feeds(search="nothing", api_key=KEY)
 
+    def test_no_stops_in_the_area_raises(self, install) -> None:
+        install(FakeTransitland(feeds=[feed_record("f-far")]))
+        with pytest.raises(NoFeedsFoundError, match="stops"):
+            search_feeds(bbox=(0, 0, 1, 1), api_key=KEY)
 
-# ---------------------------------------------------------------------------
-# download_feed
-# ---------------------------------------------------------------------------
+    def test_no_filter_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="bbox"):
+            search_feeds(api_key=KEY)
 
+    def test_key_comes_from_the_environment(self, install, monkeypatch) -> None:
+        monkeypatch.setenv("TRANSITLAND_API_KEY", "from-env")
+        api = install(FakeTransitland(feeds=[feed_record("f-a")]))
+        search_feeds(search="x")
+        assert api.params_for("/feeds")[0]["apikey"] == "from-env"
 
-@pytest.mark.usefixtures("mock_api_key")
-class TestDownloadFeed:
-    @patch("netweave.io.transitland.requests.get")
-    @patch("netweave.io.transitland._load_feed_from_buffer")
-    def test_in_memory(
-        self,
-        mock_load,
-        mock_get,
-        mock_gtfs_zip_bytes,
-        minimal_gtfs_feed,
-    ):
-        mock_response = MagicMock()
-        mock_response.headers = {"content-length": str(len(mock_gtfs_zip_bytes))}
-        mock_response.iter_content.return_value = [mock_gtfs_zip_bytes]
-        mock_response.raise_for_status.return_value = None
-        mock_get.return_value = mock_response
+    def test_explicit_key_overrides_the_environment(self, install, monkeypatch) -> None:
+        monkeypatch.setenv("TRANSITLAND_API_KEY", "from-env")
+        api = install(FakeTransitland(feeds=[feed_record("f-a")]))
+        search_feeds(search="x", api_key=KEY)
+        assert api.params_for("/feeds")[0]["apikey"] == KEY
 
-        mock_load.return_value = minimal_gtfs_feed
+    def test_missing_key_raises(self, monkeypatch) -> None:
+        monkeypatch.delenv("TRANSITLAND_API_KEY", raising=False)
+        with pytest.raises(TransitlandAPIError, match="API key"):
+            search_feeds(search="x")
 
-        result = download_feed("f-test")
-        assert isinstance(result, GTFSFeed)
-        mock_get.assert_called_once()
+    def test_projected_polygon_is_queried_in_lon_lat(self, install) -> None:
+        api = install(
+            FakeTransitland(feeds=[feed_record("f-a")], stop_pages={None: ([stop_in("f-a")], None)})
+        )
+        area = gpd.GeoDataFrame(geometry=[box(-122.5, 37.7, -122.3, 37.9)], crs=4326).to_crs(3857)
+        search_feeds(polygon=area, api_key=KEY)
+        west, south, east, north = map(float, api.params_for("/stops")[0]["bbox"].split(","))
+        assert west == pytest.approx(-122.5)
+        assert south == pytest.approx(37.7)
+        assert east == pytest.approx(-122.3)
+        assert north == pytest.approx(37.9)
 
-    @patch("netweave.io.transitland.requests.get")
-    @patch("netweave.io.transitland._load_feed_from_buffer")
-    def test_with_output_dir(
-        self,
-        mock_load,
-        mock_get,
-        mock_gtfs_zip_bytes,
-        minimal_gtfs_feed,
-        tmp_path,
-    ):
-        mock_response = MagicMock()
-        mock_response.headers = {"content-length": str(len(mock_gtfs_zip_bytes))}
-        mock_response.iter_content.return_value = [mock_gtfs_zip_bytes]
-        mock_response.raise_for_status.return_value = None
-        mock_get.return_value = mock_response
+    def test_shapely_polygon_is_accepted(self, install) -> None:
+        api = install(
+            FakeTransitland(feeds=[feed_record("f-a")], stop_pages={None: ([stop_in("f-a")], None)})
+        )
+        search_feeds(polygon=box(0, 1, 2, 3), api_key=KEY)
+        assert api.params_for("/stops")[0]["bbox"] == "0.0,1.0,2.0,3.0"
 
-        mock_load.return_value = minimal_gtfs_feed
+    def test_warns_when_the_stop_check_reaches_its_limit(self, install) -> None:
+        endless = {page: ([stop_in("f-a")], page + 1) for page in range(1, 60)}
+        endless[None] = ([stop_in("f-a")], 1)
+        install(FakeTransitland(feeds=[feed_record("f-a")], stop_pages=endless))
+        with pytest.warns(UserWarning, match="incomplete"):
+            search_feeds(bbox=(0, 0, 1, 1), api_key=KEY)
 
-        output_dir = tmp_path / "feeds"
-        result = download_feed("f-test", output_dir=output_dir)
-        assert isinstance(result, tuple)
-        feed, path = result
-        assert isinstance(feed, GTFSFeed)
-        assert path == output_dir / "f-test.zip"
-        assert path.exists()
+    def test_request_failure_does_not_reveal_the_key(self, monkeypatch) -> None:
+        def fail(url, params=None, **_):
+            return FakeResponse(url, params, status=500)
 
-    @patch("netweave.io.transitland.requests.get")
-    def test_download_failure(self, mock_get):
-        from requests.exceptions import HTTPError
-
-        mock_response = MagicMock()
-        mock_response.raise_for_status.side_effect = HTTPError("404 Not Found")
-        mock_get.return_value = mock_response
-
-        with pytest.raises(TransitlandAPIError, match="Failed to download"):
-            download_feed("f-test")
+        monkeypatch.setattr("netweave.io.transitland.requests.get", fail)
+        monkeypatch.setattr("netweave.io.transitland._RETRY_BACKOFF", 0.0)
+        with pytest.raises(TransitlandAPIError) as caught:
+            search_feeds(search="x", api_key=KEY)
+        assert KEY not in str(caught.value)
 
 
-# ---------------------------------------------------------------------------
-# fetch_feeds
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.usefixtures("mock_api_key")
 class TestFetchFeeds:
-    @patch("netweave.io.transitland.search_feeds")
-    @patch("netweave.io.transitland.download_feed")
-    def test_merge_true(
-        self,
-        mock_download,
-        mock_search,
-        minimal_gtfs_feed,
-    ):
-        mock_search.return_value = pd.DataFrame({
-            "feed_key": ["f-1", "f-2"],
-            "onestop_id": ["f-1", "f-2"],
-            "name": ["Feed 1", "Feed 2"],
-            "spec": ["gtfs", "gtfs"],
-            "static_current": ["url1", "url2"],
-            "license_redistribution": ["yes", "yes"],
-        })
-        mock_download.side_effect = [
-            minimal_gtfs_feed,
-            minimal_gtfs_feed,
+    def test_merges_by_default_with_stable_prefixes(self, install, gtfs_zip) -> None:
+        install(
+            FakeTransitland(
+                feeds=[feed_record("f-b", "Bee", key=2), feed_record("f-a", "Ay", key=1)],
+                downloads={"f-a": gtfs_zip(), "f-b": gtfs_zip()},
+                slow={"f-b"},
+            )
+        )
+        feed = fetch_feeds(search="x", api_key=KEY, max_workers=2)
+        assert isinstance(feed, GTFSFeed)
+        assert feed.sources == [
+            {"prefix": "f-b", "onestop_id": "f-b", "feed_key": "2", "name": "Bee"},
+            {"prefix": "f-a", "onestop_id": "f-a", "feed_key": "1", "name": "Ay"},
         ]
+        assert feed.stops["stop_id"].tolist()[0] == "f-b_1000"
 
-        result = fetch_feeds(search="test", merge=True)
-        assert isinstance(result, GTFSFeed)
-        # Merged feed should have double the trips
-        assert len(result.trips) == len(minimal_gtfs_feed.trips) * 2
-
-    @patch("netweave.io.transitland.search_feeds")
-    @patch("netweave.io.transitland.download_feed")
-    def test_merge_false(
-        self,
-        mock_download,
-        mock_search,
-        minimal_gtfs_feed,
-    ):
-        mock_search.return_value = pd.DataFrame({
-            "feed_key": ["f-1"],
-            "onestop_id": ["f-1"],
-            "name": ["Feed 1"],
-            "spec": ["gtfs"],
-            "static_current": ["url1"],
-            "license_redistribution": ["yes"],
-        })
-        mock_download.return_value = minimal_gtfs_feed
-
-        result = fetch_feeds(search="test", merge=False)
-        assert isinstance(result, list)
-        assert len(result) == 1
-        assert isinstance(result[0], GTFSFeed)
-
-    @patch("netweave.io.transitland.search_feeds")
-    @patch("netweave.io.transitland.download_feed")
-    def test_skip_no_redistribution(
-        self,
-        mock_download,
-        mock_search,
-        minimal_gtfs_feed,
-    ):
-        mock_search.return_value = pd.DataFrame({
-            "feed_key": ["f-1", "f-2"],
-            "onestop_id": ["f-1", "f-2"],
-            "name": ["Feed 1", "Feed 2"],
-            "spec": ["gtfs", "gtfs"],
-            "static_current": ["url1", "url2"],
-            "license_redistribution": ["yes", "no"],
-        })
-        mock_download.return_value = minimal_gtfs_feed
-
-        result = fetch_feeds(search="test", merge=True)
-        assert isinstance(result, GTFSFeed)
-        # Only one feed should be downloaded (the other skipped)
-        assert mock_download.call_count == 1
-
-    @patch("netweave.io.transitland.search_feeds")
-    @patch("netweave.io.transitland.download_feed")
-    def test_all_failed_raises(
-        self,
-        mock_download,
-        mock_search,
-    ):
-        mock_search.return_value = pd.DataFrame({
-            "feed_key": ["f-1"],
-            "onestop_id": ["f-1"],
-            "name": ["Feed 1"],
-            "spec": ["gtfs"],
-            "static_current": ["url1"],
-            "license_redistribution": ["yes"],
-        })
-        mock_download.side_effect = TransitlandAPIError("Download failed")
-
-        with pytest.raises(NoFeedsFoundError, match="No feeds could be downloaded"):
-            fetch_feeds(search="test")
-
-
-# ---------------------------------------------------------------------------
-# transit_network_from_transitland
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.usefixtures("mock_api_key")
-class TestTransitNetworkFromTransitland:
-    @patch("netweave.io.transitland.fetch_feeds")
-    @patch("netweave.io.transitland.create_transit_network")
-    def test_basic(
-        self,
-        mock_create,
-        mock_fetch,
-        minimal_gtfs_feed,
-    ):
-        mock_fetch.return_value = minimal_gtfs_feed
-        mock_network = TransitNetwork(
-            edges=pd.DataFrame({"from": [1], "to": [2], "weight": [5.0]}),
-            nodes=pd.DataFrame({"node_id": [1], "x": [0.0], "y": [0.0]}),
+    def test_can_return_separate_feeds_in_search_order(self, install, gtfs_zip) -> None:
+        install(
+            FakeTransitland(
+                feeds=[feed_record("f-b"), feed_record("f-a")],
+                downloads={"f-a": gtfs_zip(), "f-b": gtfs_zip()},
+                slow={"f-b"},
+            )
         )
-        mock_create.return_value = mock_network
+        feeds = fetch_feeds(search="x", api_key=KEY, merge=False, max_workers=2)
+        assert [feed.onestop_id for feed in feeds] == ["f-b", "f-a"]
 
-        result = transit_network_from_transitland(
-            search="test",
-            day="monday",
-            timerange=("07:00:00", "10:00:00"),
+    def test_corrupt_zip_is_left_out_with_a_warning(self, install, gtfs_zip) -> None:
+        install(
+            FakeTransitland(
+                feeds=[feed_record("f-bad"), feed_record("f-good")],
+                downloads={"f-bad": b"not a zip", "f-good": gtfs_zip()},
+            )
         )
-        assert isinstance(result, TransitNetwork)
-        mock_fetch.assert_called_once()
-        mock_create.assert_called_once_with(
-            minimal_gtfs_feed,
-            day="monday",
-            timerange=("07:00:00", "10:00:00"),
+        with pytest.warns(UserWarning, match="f-bad"):
+            feed = fetch_feeds(search="x", api_key=KEY)
+        assert [source["prefix"] for source in feed.sources] == ["f-good"]
+        assert [record["feed"] for record in feed.missing] == ["f-bad"]
+
+    def test_invalid_feed_is_left_out_with_a_warning(self, install, gtfs_zip) -> None:
+        empty = io.BytesIO()
+        with zipfile.ZipFile(empty, "w") as archive:
+            archive.writestr("stops.txt", "stop_id,stop_lat,stop_lon\n1,0,0\n")
+        install(
+            FakeTransitland(
+                feeds=[feed_record("f-thin"), feed_record("f-good")],
+                downloads={"f-thin": empty.getvalue(), "f-good": gtfs_zip()},
+            )
         )
+        with pytest.warns(UserWarning, match="f-thin.*agency"):
+            feed = fetch_feeds(search="x", api_key=KEY)
+        assert "agency" in feed.missing[0]["reason"]
 
-
-# ---------------------------------------------------------------------------
-# Polygon input (GeoDataFrame / shapely)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.usefixtures("mock_api_key")
-class TestPolygonInput:
-    @patch("netweave.io.transitland._request")
-    def test_geodataframe(self, mock_request, sample_feed_response):
-        gpd = pytest.importorskip("geopandas")
-        from shapely.geometry import box
-
-        stops_response = {
-            "stops": [
-                {"feed_version": {"feed": {"onestop_id": "f-sf~bay~area~rg"}}},
-                {"feed_version": {"feed": {"onestop_id": "f-sf~muni"}}},
-            ],
-            "meta": {"after": None},
-        }
-        mock_request.side_effect = [stops_response, sample_feed_response]
-        gdf = gpd.GeoDataFrame(
-            geometry=[box(-122.5, 37.7, -122.4, 37.8)],
+    def test_failed_download_warns_without_revealing_the_key(self, install, gtfs_zip) -> None:
+        install(
+            FakeTransitland(
+                feeds=[feed_record("f-gone"), feed_record("f-good")],
+                downloads={"f-gone": 503, "f-good": gtfs_zip()},
+            )
         )
-        df = search_feeds(polygon=gdf)
-        assert len(df) == 2
-        assert mock_request.call_count == 2
-        # First call should be to /stops
-        assert "stops" in mock_request.call_args_list[0][0][0]
-        # Second call should be to /feeds
-        _, params, _ = mock_request.call_args_list[1][0]
-        assert params["bbox"] == "-122.5,37.7,-122.4,37.8"
+        with pytest.warns(UserWarning, match="f-gone") as caught:
+            feed = fetch_feeds(search="x", api_key=KEY)
+        assert KEY not in str(caught[0].message)
+        assert KEY not in feed.missing[0]["reason"]
 
-    @patch("netweave.io.transitland._request")
-    def test_shapely_polygon(self, mock_request, sample_feed_response):
-        from shapely.geometry import box
+    def test_licence_skip_is_visible_and_can_be_overridden(self, install, gtfs_zip) -> None:
+        records = [feed_record("f-closed", redistribution="no"), feed_record("f-open")]
+        downloads = {"f-closed": gtfs_zip(), "f-open": gtfs_zip()}
+        install(FakeTransitland(feeds=records, downloads=downloads))
+        with pytest.warns(UserWarning, match="f-closed.*skip_no_redistribution"):
+            feed = fetch_feeds(search="x", api_key=KEY)
+        assert [source["prefix"] for source in feed.sources] == ["f-open"]
+        assert feed.missing[0]["feed"] == "f-closed"
 
-        stops_response = {
-            "stops": [
-                {"feed_version": {"feed": {"onestop_id": "f-sf~bay~area~rg"}}},
-                {"feed_version": {"feed": {"onestop_id": "f-sf~muni"}}},
-            ],
-            "meta": {"after": None},
-        }
-        mock_request.side_effect = [stops_response, sample_feed_response]
-        polygon = box(-122.5, 37.7, -122.4, 37.8)
-        df = search_feeds(polygon=polygon)
-        assert len(df) == 2
-        assert mock_request.call_count == 2
-        # First call should be to /stops
-        assert "stops" in mock_request.call_args_list[0][0][0]
-        # Second call should be to /feeds
-        _, params, _ = mock_request.call_args_list[1][0]
-        assert params["bbox"] == "-122.5,37.7,-122.4,37.8"
+        feed = fetch_feeds(search="x", api_key=KEY, skip_no_redistribution=False)
+        assert [source["prefix"] for source in feed.sources] == ["f-closed", "f-open"]
+        assert feed.missing == []
+
+    def test_raises_with_reasons_when_no_feed_succeeds(self, install) -> None:
+        install(FakeTransitland(feeds=[feed_record("f-bad")], downloads={"f-bad": b"not a zip"}))
+        with pytest.warns(UserWarning), pytest.raises(NoFeedsFoundError, match="f-bad"):
+            fetch_feeds(search="x", api_key=KEY)
+
+    def test_saves_downloads_when_asked(self, install, gtfs_zip, tmp_path) -> None:
+        install(FakeTransitland(feeds=[feed_record("f-a")], downloads={"f-a": gtfs_zip()}))
+        fetch_feeds(search="x", api_key=KEY, output_dir=tmp_path / "zips")
+        assert (tmp_path / "zips" / "f-a.zip").exists()

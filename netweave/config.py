@@ -1,6 +1,5 @@
 """Configuration management for netweave."""
 
-
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -39,18 +38,13 @@ class Settings:
     log_console: bool = field(default=True)
     log_level: str = field(default="INFO")
     debug: bool = field(default=False)
-    gtfs_api: dict[str, str] = field(default_factory=lambda: {
-        "mobilitydatabase": "https://api.mobilitydatabase.org/v1",
-        "transitland": "https://transit.land/api/v2/rest",
-    })
+    gtfs_api: dict[str, str] = field(
+        default_factory=lambda: {
+            "mobilitydatabase": "https://api.mobilitydatabase.org/v1",
+            "transitland": "https://transit.land/api/v2/rest",
+        }
+    )
     encoding: str = field(default="utf-8")
-
-    def __post_init__(self) -> None:
-        # Ensure data directory exists
-        Path(self.data_folder).mkdir(parents=True, exist_ok=True)
-        # Only create log directory if debug mode is enabled
-        if self.debug:
-            Path(self.log_folder).mkdir(parents=True, exist_ok=True)
 
     def to_dict(self) -> dict[str, Any]:
         """Return settings as a plain dictionary."""

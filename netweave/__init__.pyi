@@ -28,6 +28,7 @@ from .types import TransitNetwork as TransitNetwork
 from .integration.core import integrate as integrate
 from .io.gtfs import GTFSFeed as GTFSFeed
 from .io.gtfs import load_feed as load_feed
+from .io.gtfs import merge_feeds as merge_feeds
 from .io.transitland import fetch_feeds as fetch_feeds
 from .io.transitland import search_feeds as search_feeds
 from .transform.gtfs import create_transit_network as create_transit_network

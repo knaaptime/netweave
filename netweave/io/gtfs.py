@@ -1,41 +1,129 @@
-"""GTFS feed container and validation."""
+"""GTFS feed container, loading, validation and merging."""
 
-
+import warnings
 import zipfile
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Optional
+from pathlib import Path, PurePosixPath
+from typing import Any
 
 import pandas as pd
 
-from netweave._logging import status
-from netweave.exceptions import InvalidGTFS, MissingGTFSFile
+from netweave.exceptions import InvalidGTFS
 
 # GTFS files required for a valid feed
-REQUIRED_GTFS_FILES: list[str] = [
-    "agency",
-    "routes",
-    "trips",
-    "stop_times",
-    "stops",
-]
+REQUIRED_GTFS_FILES: tuple[str, ...] = ("agency", "routes", "trips", "stop_times", "stops")
 
-OPTIONAL_GTFS_FILES: list[str] = [
+OPTIONAL_GTFS_FILES: tuple[str, ...] = (
     "calendar",
     "calendar_dates",
     "shapes",
     "frequencies",
     "transfers",
     "feed_info",
-]
+)
+
+_GTFS_TABLES: tuple[str, ...] = REQUIRED_GTFS_FILES + OPTIONAL_GTFS_FILES
+
+_ID_COLUMNS: tuple[str, ...] = (
+    "agency_id",
+    "route_id",
+    "trip_id",
+    "stop_id",
+    "service_id",
+    "shape_id",
+    "zone_id",
+    "parent_station",
+    "from_stop_id",
+    "to_stop_id",
+    "from_route_id",
+    "to_route_id",
+    "from_trip_id",
+    "to_trip_id",
+)
+
+_TABLES_RECORDING_FEED: tuple[str, ...] = (
+    "agency",
+    "routes",
+    "trips",
+    "stops",
+    "calendar",
+    "calendar_dates",
+)
+
+_NUMERIC_COLUMNS: tuple[str, ...] = (
+    "stop_sequence",
+    "stop_lat",
+    "stop_lon",
+    "shape_pt_lat",
+    "shape_pt_lon",
+    "shape_pt_sequence",
+    "headway_secs",
+)
+
+_EXPECTED_COLUMNS: dict[str, tuple[str, ...]] = {
+    "agency": ("agency_name",),
+    "routes": ("route_id",),
+    "trips": ("route_id", "trip_id", "service_id"),
+    "stop_times": ("trip_id", "stop_id", "stop_sequence"),
+    "stops": ("stop_id", "stop_lat", "stop_lon"),
+    "calendar": (
+        "service_id",
+        "monday",
+        "tuesday",
+        "wednesday",
+        "thursday",
+        "friday",
+        "saturday",
+        "sunday",
+        "start_date",
+        "end_date",
+    ),
+    "calendar_dates": ("service_id", "date", "exception_type"),
+    "frequencies": ("trip_id", "start_time", "end_time", "headway_secs"),
+    "shapes": ("shape_id", "shape_pt_lat", "shape_pt_lon", "shape_pt_sequence"),
+}
+
+
+def _as_text(values: pd.Series) -> pd.Series:
+    """Return identifiers as text, leaving missing values missing."""
+    if pd.api.types.is_string_dtype(values):
+        return values
+    present = values.notna()
+    text = values.astype(object)
+    text[present] = values[present].astype(str)
+    return text
+
+
+def _normalized(table: pd.DataFrame) -> pd.DataFrame:
+    """Give a GTFS table text identifiers and numeric ordering and coordinate columns."""
+    if table.empty:
+        return table
+    table = table.copy(deep=False)
+    for column in _ID_COLUMNS:
+        if column in table.columns:
+            table[column] = _as_text(table[column])
+    for column in _NUMERIC_COLUMNS:
+        if column in table.columns:
+            table[column] = pd.to_numeric(table[column], errors="coerce")
+    return table
 
 
 @dataclass
 class GTFSFeed:
     """Container for GTFS feed tables.
 
-    Each attribute is a pandas DataFrame representing a GTFS file.
-    Optional files default to empty DataFrames.
+    Each table attribute is a pandas DataFrame representing a GTFS file, and
+    optional files default to empty DataFrames. Identifiers are always text;
+    ``stop_sequence``, coordinates and ``headway_secs`` are always numeric.
+
+    Parameters
+    ----------
+    name, onestop_id, feed_key : str, optional
+        Where the feed came from, when known.
+    sources : list of dict
+        One record per original feed, filled in when feeds are merged.
+    missing : list of dict
+        Feeds that were requested but could not be supplied, with reasons.
     """
 
     agency: pd.DataFrame = field(default_factory=pd.DataFrame)
@@ -49,116 +137,72 @@ class GTFSFeed:
     frequencies: pd.DataFrame = field(default_factory=pd.DataFrame)
     transfers: pd.DataFrame = field(default_factory=pd.DataFrame)
     feed_info: pd.DataFrame = field(default_factory=pd.DataFrame)
+    name: str | None = None
+    onestop_id: str | None = None
+    feed_key: str | None = None
+    sources: list[dict[str, Any]] = field(default_factory=list)
+    missing: list[dict[str, Any]] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        for table in _GTFS_TABLES:
+            setattr(self, table, _normalized(getattr(self, table)))
 
     def validate(self) -> None:
-        """Validate that required files are present and have expected columns.
+        """Check that required tables and columns are present and readable.
 
         Raises
         ------
         InvalidGTFS
-            If validation fails.
+            If a required table or column is missing, if ``agency_id`` is
+            absent where a feed has several agencies, or if ``stop_sequence``
+            holds values that are not numbers.
         """
-        missing: list[str] = []
-        for name in REQUIRED_GTFS_FILES:
-            df = getattr(self, name)
-            if df.empty:
-                missing.append(name)
+        missing = [name for name in REQUIRED_GTFS_FILES if getattr(self, name).empty]
         if missing:
-            raise InvalidGTFS(
-                f"Missing required GTFS file(s): {', '.join(missing)}"
-            )
+            raise InvalidGTFS(f"Missing required GTFS file(s): {', '.join(missing)}")
 
-        # Basic column checks
-        _expected = {
-            "agency": ["agency_id", "agency_name"],
-            "routes": ["route_id", "agency_id"],
-            "trips": ["route_id", "trip_id", "service_id"],
-            "stop_times": ["trip_id", "stop_id", "stop_sequence"],
-            "stops": ["stop_id", "stop_lat", "stop_lon"],
-            "calendar": [
-                "service_id", "monday", "tuesday", "wednesday",
-                "thursday", "friday", "saturday", "sunday",
-                "start_date", "end_date",
-            ],
-            "calendar_dates": ["service_id", "date", "exception_type"],
-            "frequencies": ["trip_id", "start_time", "end_time", "headway_secs"],
-            "shapes": ["shape_id", "shape_pt_lat", "shape_pt_lon", "shape_pt_sequence"],
-        }
-        for name, cols in _expected.items():
-            df = getattr(self, name)
-            if not df.empty:
-                missing_cols = [c for c in cols if c not in df.columns]
-                if missing_cols:
-                    raise InvalidGTFS(
-                        f"{name}.txt missing required column(s): {', '.join(missing_cols)}"
-                    )
+        for name, columns in _EXPECTED_COLUMNS.items():
+            table = getattr(self, name)
+            if table.empty:
+                continue
+            absent = [column for column in columns if column not in table.columns]
+            if absent:
+                raise InvalidGTFS(f"{name}.txt missing required column(s): {', '.join(absent)}")
 
-        # Foreign key sanity checks (soft — only warn)
-        trip_ids = set(self.trips["trip_id"]) if "trip_id" in self.trips.columns else set()
-        stop_ids = set(self.stops["stop_id"]) if "stop_id" in self.stops.columns else set()
-        route_ids = set(self.routes["route_id"]) if "route_id" in self.routes.columns else set()
+        self._check_agency_ids()
 
-        if self.stop_times.empty:
-            raise InvalidGTFS("stop_times is empty after loading")
+        if self.stop_times["stop_sequence"].isna().any():
+            raise InvalidGTFS("stop_times.txt has stop_sequence values that are not numbers")
 
-        orphan_trips = set(self.stop_times["trip_id"]) - trip_ids
-        if orphan_trips:
-            status(
-                f"WARNING: {len(orphan_trips)} trip_id(s) in stop_times "
-                f"not found in trips.txt",
-            )
+        self._warn_about_orphans()
 
-        orphan_stops = set(self.stop_times["stop_id"]) - stop_ids
-        if orphan_stops:
-            status(
-                f"WARNING: {len(orphan_stops)} stop_id(s) in stop_times "
-                f"not found in stops.txt",
-            )
+    def _check_agency_ids(self) -> None:
+        """Require ``agency_id`` only where one feed lists several agencies."""
+        agencies = self.agency
+        by_feed = agencies.groupby("feed") if "feed" in agencies.columns else [(None, agencies)]
+        for _, group in by_feed:
+            if len(group) < 2:
+                continue
+            if "agency_id" not in group.columns or group["agency_id"].isna().any():
+                raise InvalidGTFS("agency.txt needs agency_id when a feed has several agencies")
+            if "agency_id" not in self.routes.columns:
+                raise InvalidGTFS("routes.txt needs agency_id when a feed has several agencies")
 
-        orphan_routes = set(self.trips["route_id"]) - route_ids
-        if orphan_routes:
-            status(
-                f"WARNING: {len(orphan_routes)} route_id(s) in trips "
-                f"not found in routes.txt",
-            )
-
-    def merge(self, other: "GTFSFeed", prefix: str | None = None) -> "GTFSFeed":
-        """Merge another GTFSFeed into this one, concatenating all tables.
-
-        Parameters
-        ----------
-        other : GTFSFeed
-            Feed to merge.
-        prefix : str, optional
-            Prefix to prepend to all ID columns in ``other`` to avoid
-            collisions when merging feeds from different sources.
-            If provided, IDs like ``stop_id`` become ``{prefix}_stop_id``.
-
-        Returns
-        -------
-        GTFSFeed
-            A new feed with concatenated tables.
-        """
-        if prefix is not None:
-            other = _prefix_feed_ids(other, prefix)
-
-        kwargs: dict[str, pd.DataFrame] = {}
-        for attr in [
-            "agency", "routes", "trips", "stop_times", "stops",
-            "calendar", "calendar_dates", "shapes", "frequencies",
-            "transfers", "feed_info",
-        ]:
-            left = getattr(self, attr)
-            right = getattr(other, attr)
-            if left.empty and right.empty:
-                kwargs[attr] = pd.DataFrame()
-            elif left.empty:
-                kwargs[attr] = right.copy()
-            elif right.empty:
-                kwargs[attr] = left.copy()
-            else:
-                kwargs[attr] = pd.concat([left, right], ignore_index=True)
-        return GTFSFeed(**kwargs)
+    def _warn_about_orphans(self) -> None:
+        """Warn about references to trips, stops or routes that a feed never defines."""
+        checks = (
+            ("trip_id", self.stop_times, self.trips, "stop_times", "trips"),
+            ("stop_id", self.stop_times, self.stops, "stop_times", "stops"),
+            ("route_id", self.trips, self.routes, "trips", "routes"),
+        )
+        for column, child, parent, child_name, parent_name in checks:
+            orphans = set(child[column].dropna()) - set(parent[column].dropna())
+            if orphans:
+                warnings.warn(
+                    f"{len(orphans)} {column}(s) in {child_name} not found in {parent_name}.txt",
+                    UserWarning,
+                    stacklevel=3,
+                )
 
     @property
     def has_calendar(self) -> bool:
@@ -181,78 +225,106 @@ class GTFSFeed:
         return not self.shapes.empty
 
 
-def _prefix_feed_ids(feed: GTFSFeed, prefix: str) -> GTFSFeed:
-    """Prefix all ID columns in a GTFSFeed to avoid collisions.
+def _prefixed(values: pd.Series, prefix: str) -> pd.Series:
+    """Prepend a prefix to identifiers, leaving missing values missing."""
+    present = values.notna()
+    labelled = values.astype(object)
+    labelled[present] = prefix + "_" + values[present].astype(str)
+    return labelled
 
-    Updates both primary key columns and foreign key references.
+
+def _with_prefix(feed: GTFSFeed, prefix: str) -> dict[str, pd.DataFrame]:
+    """Return a feed's tables with every identifier prefixed and its feed recorded."""
+    tables: dict[str, pd.DataFrame] = {}
+    for name in _GTFS_TABLES:
+        table = getattr(feed, name)
+        if table.empty:
+            continue
+        table = table.copy(deep=False)
+        for column in _ID_COLUMNS:
+            if column in table.columns:
+                table[column] = _prefixed(table[column], prefix)
+        if name in _TABLES_RECORDING_FEED:
+            table["feed"] = prefix
+        tables[name] = table
+    return tables
+
+
+def _unique_prefix(prefix: str, used: set[str]) -> str:
+    """Return a prefix no other feed has taken, numbering it if needed."""
+    candidate, number = prefix, 1
+    while candidate in used:
+        number += 1
+        candidate = f"{prefix}_{number}"
+    return candidate
+
+
+def merge_feeds(feeds: list[GTFSFeed], prefixes: list[str] | None = None) -> GTFSFeed:
+    """Combine feeds into one, keeping IDs from different feeds distinct.
+
+    Every feed's identifiers gain a prefix, so collisions cannot occur. Without
+    ``prefixes``, each feed uses its ``onestop_id``, then its ``feed_key``, then
+    ``feed_{position}``. These are stable across runs, whereas a feed's name may
+    be absent, may be shared with another feed, and may change.
 
     Parameters
     ----------
-    feed : GTFSFeed
-        Feed to prefix.
-    prefix : str
-        Prefix to prepend (e.g., "f0", "f1").
+    feeds : list of GTFSFeed
+        Feeds to combine. A feed that is already merged keeps its prefixes.
+    prefixes : list of str, optional
+        One distinct prefix per feed, overriding the defaults.
 
     Returns
     -------
     GTFSFeed
-        New feed with prefixed IDs.
+        A new feed, or the input itself when given one already merged feed.
+
+    Raises
+    ------
+    ValueError
+        If there are no feeds, or if ``prefixes`` does not supply one distinct
+        prefix per feed.
     """
-    import copy
+    feeds = list(feeds)
+    if not feeds:
+        raise ValueError("merge_feeds needs at least one feed")
+    if prefixes is not None:
+        if len(prefixes) != len(feeds):
+            raise ValueError(f"merge_feeds needs one prefix per feed, got {len(prefixes)}")
+        if len(set(prefixes)) != len(prefixes):
+            raise ValueError("merge_feeds needs distinct prefixes")
+    if len(feeds) == 1 and feeds[0].sources:
+        return feeds[0]
 
-    feed = copy.deepcopy(feed)
-    p = prefix
-
-    # Primary ID columns that appear in multiple tables
-    id_cols = {
-        "agency_id": ["agency", "routes"],
-        "route_id": ["routes", "trips"],
-        "trip_id": ["trips", "stop_times", "frequencies"],
-        "stop_id": ["stops", "stop_times", "transfers"],
-        "service_id": ["calendar", "calendar_dates", "trips"],
-        "shape_id": ["shapes", "trips"],
-        "zone_id": ["stops"],
-    }
-
-    # Build mapping of old ID -> new ID for each column
-    id_maps: dict[str, dict[str, str]] = {}
-    for col, tables in id_cols.items():
-        for table in tables:
-            df = getattr(feed, table)
-            if not df.empty and col in df.columns:
-                if col not in id_maps:
-                    id_maps[col] = {}
-                for old_id in df[col].unique():
-                    if old_id not in id_maps[col]:
-                        id_maps[col][old_id] = f"{p}_{old_id}"
-
-    # Apply prefixing to all tables
-    for attr in [
-        "agency", "routes", "trips", "stop_times", "stops",
-        "calendar", "calendar_dates", "shapes", "frequencies",
-        "transfers", "feed_info",
-    ]:
-        df = getattr(feed, attr)
-        if df.empty:
+    used = {source["prefix"] for feed in feeds for source in feed.sources}
+    parts: list[dict[str, pd.DataFrame]] = []
+    sources: list[dict[str, Any]] = []
+    missing: list[dict[str, Any]] = []
+    for position, feed in enumerate(feeds):
+        missing.extend(feed.missing)
+        if feed.sources:
+            parts.append({name: getattr(feed, name) for name in _GTFS_TABLES})
+            sources.extend(feed.sources)
             continue
+        default = feed.onestop_id or feed.feed_key or f"feed_{position}"
+        prefix = _unique_prefix(prefixes[position] if prefixes else str(default), used)
+        used.add(prefix)
+        parts.append(_with_prefix(feed, prefix))
+        sources.append(
+            {
+                "prefix": prefix,
+                "onestop_id": feed.onestop_id,
+                "feed_key": feed.feed_key,
+                "name": feed.name,
+            }
+        )
 
-        # Prefix primary ID columns
-        for col in id_cols:
-            if col in df.columns:
-                df[col] = df[col].map(id_maps[col])
-
-        # Special case: parent_station references stops.stop_id
-        if "parent_station" in df.columns:
-            df["parent_station"] = df["parent_station"].map(id_maps.get("stop_id", {}))
-
-        # Special case: transfers has from_stop_id and to_stop_id
-        if attr == "transfers":
-            if "from_stop_id" in df.columns:
-                df["from_stop_id"] = df["from_stop_id"].map(id_maps.get("stop_id", {}))
-            if "to_stop_id" in df.columns:
-                df["to_stop_id"] = df["to_stop_id"].map(id_maps.get("stop_id", {}))
-
-    return feed
+    combined: dict[str, pd.DataFrame] = {}
+    for name in _GTFS_TABLES:
+        tables = [part[name] for part in parts if name in part and not part[name].empty]
+        if tables:
+            combined[name] = pd.concat(tables, ignore_index=True)
+    return GTFSFeed(**combined, sources=sources, missing=missing)
 
 
 def load_feed(path: str | Path) -> GTFSFeed:
@@ -272,54 +344,46 @@ def load_feed(path: str | Path) -> GTFSFeed:
         raise FileNotFoundError(f"GTFS path not found: {path}")
 
     if path.is_file() and path.suffix == ".zip":
-        return _load_from_zip(path)
-    elif path.is_dir():
+        return load_zip(path, name=path.stem)
+    if path.is_dir():
         return _load_from_dir(path)
-    else:
-        raise ValueError(f"GTFS path must be a .zip file or directory: {path}")
+    raise ValueError(f"GTFS path must be a .zip file or directory: {path}")
 
 
-def _load_from_zip(path: Path) -> GTFSFeed:
-    """Load GTFS tables from a zip archive."""
-    kwargs: dict[str, pd.DataFrame] = {}
-    with zipfile.ZipFile(path, "r") as z:
-        names = {Path(n).stem for n in z.namelist() if n.endswith(".txt")}
-        for attr in [
-            "agency", "routes", "trips", "stop_times", "stops",
-            "calendar", "calendar_dates", "shapes", "frequencies",
-            "transfers", "feed_info",
-        ]:
-            if attr in names:
-                with z.open(f"{attr}.txt") as f:
-                    kwargs[attr] = _read_gtfs_csv(f)
-            else:
-                kwargs[attr] = pd.DataFrame()
-    return GTFSFeed(**kwargs)
+def load_zip(source: Any, name: str | None = None) -> GTFSFeed:
+    """Load GTFS tables from a zip archive, given as a path or an open binary file.
+
+    Tables may sit in a folder inside the archive.
+    """
+    with zipfile.ZipFile(source, "r") as archive:
+        members: dict[str, zipfile.ZipInfo] = {}
+        for info in archive.infolist():
+            member = PurePosixPath(info.filename)
+            if member.suffix == ".txt" and "__MACOSX" not in member.parts:
+                members.setdefault(member.stem, info)
+
+        tables: dict[str, pd.DataFrame] = {}
+        for table in _GTFS_TABLES:
+            info = members.get(table)
+            if info is not None and info.file_size > 0:
+                with archive.open(info) as handle:
+                    tables[table] = _read_gtfs_csv(handle)
+    return GTFSFeed(**tables, name=name)
 
 
 def _load_from_dir(path: Path) -> GTFSFeed:
     """Load GTFS tables from a directory."""
-    kwargs: dict[str, pd.DataFrame] = {}
-    for attr in [
-        "agency", "routes", "trips", "stop_times", "stops",
-        "calendar", "calendar_dates", "shapes", "frequencies",
-        "transfers", "feed_info",
-    ]:
-        file_path = path / f"{attr}.txt"
-        if file_path.exists():
-            kwargs[attr] = _read_gtfs_csv(file_path)
-        else:
-            kwargs[attr] = pd.DataFrame()
-    return GTFSFeed(**kwargs)
+    tables: dict[str, pd.DataFrame] = {}
+    for table in _GTFS_TABLES:
+        file_path = path / f"{table}.txt"
+        if file_path.exists() and file_path.stat().st_size > 0:
+            tables[table] = _read_gtfs_csv(file_path)
+    return GTFSFeed(**tables, name=path.name)
 
 
-def _read_gtfs_csv(path_or_buffer) -> pd.DataFrame:
-    """Read a GTFS CSV file with optional pyarrow acceleration.
-
-    Uses the pyarrow engine if available for faster parsing.
-    Falls back to the default pandas engine otherwise.
-    """
-    read_kwargs = {
+def _read_gtfs_csv(path_or_buffer: Any) -> pd.DataFrame:
+    """Read a GTFS CSV file as text, using pyarrow when it is available."""
+    read_kwargs: dict[str, Any] = {
         "dtype": str,
         "keep_default_na": False,
         "na_values": ["", "\\N"],
@@ -327,7 +391,10 @@ def _read_gtfs_csv(path_or_buffer) -> pd.DataFrame:
     }
     try:
         import pyarrow  # noqa: F401
+
         read_kwargs["engine"] = "pyarrow"
     except ImportError:
         read_kwargs["low_memory"] = False
-    return pd.read_csv(path_or_buffer, **read_kwargs)
+    table = pd.read_csv(path_or_buffer, **read_kwargs)
+    table.columns = table.columns.str.strip()
+    return table

@@ -10,10 +10,8 @@ from __future__ import annotations
 import logging
 import sys
 from pathlib import Path
-from typing import Any
 
 from netweave.config import settings
-
 
 # ---------------------------------------------------------------------------
 # Internal: verbose structured logger (debug mode only)
@@ -45,6 +43,7 @@ def _get_logger(name: str = "netweave") -> logging.Logger | None:
         logger.addHandler(console_handler)
 
     log_path = Path(settings.log_folder) / settings.log_file
+    log_path.parent.mkdir(parents=True, exist_ok=True)
     file_handler = logging.FileHandler(log_path, encoding="utf-8")
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
@@ -87,4 +86,3 @@ def status(message: str) -> None:
         Status message to display.
     """
     print(message)
-

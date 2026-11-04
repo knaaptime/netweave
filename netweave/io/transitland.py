@@ -1,23 +1,23 @@
 """Transitland v2 REST API client for discovering and downloading GTFS feeds."""
 
-
 import os
 import time
+import warnings
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from pathlib import Path
 from typing import Any
 
+import geopandas as gpd
 import pandas as pd
 import requests
 from tqdm import tqdm
 
 from netweave._logging import _log, status
 from netweave.config import settings
-from netweave.exceptions import NoFeedsFoundError, TransitlandAPIError
-from netweave.io.gtfs import GTFSFeed, load_feed
-from netweave.transform.gtfs import create_transit_network
-from netweave.types import TransitNetwork
+from netweave.exceptions import InvalidGTFS, NoFeedsFoundError, TransitlandAPIError
+from netweave.io.gtfs import GTFSFeed, load_zip, merge_feeds
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -29,6 +29,17 @@ _TRANSITLAND_BASE_URL: str = settings.gtfs_api.get(
 _DEFAULT_LIMIT: int = 100
 _MAX_RETRIES: int = 3
 _RETRY_BACKOFF: float = 1.0
+_STOPS_PER_PAGE: int = 100
+_MAX_STOP_PAGES: int = 50
+
+# Errors that mean one feed is unusable, not that the whole request has failed.
+_FEED_ERRORS: tuple[type[Exception], ...] = (
+    TransitlandAPIError,
+    InvalidGTFS,
+    zipfile.BadZipFile,
+    ValueError,
+    OSError,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -65,6 +76,11 @@ def _get_api_key(api_key: str | None = None) -> str:
     )
 
 
+def _without_key(error: Exception | str, api_key: str) -> str:
+    """Return an error message with the API key removed, since URLs carry it."""
+    return str(error).replace(api_key, "***")
+
+
 def _request(
     url: str,
     params: dict[str, Any],
@@ -95,12 +111,13 @@ def _request(
         If the request fails after all retries.
     """
     request_params = {**params, "apikey": api_key}
-    last_exception: Exception | None = None
+    last_error = "no response"
 
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
             response = requests.get(url, params=request_params, timeout=timeout)
             if response.status_code == 429:
+                last_error = "rate limit reached (HTTP 429)"
                 wait = _RETRY_BACKOFF * (2 ** (attempt - 1))
                 _log(
                     f"Transitland rate limit hit (429). Retrying in {wait:.1f}s "
@@ -112,18 +129,18 @@ def _request(
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as exc:
-            last_exception = exc
+            last_error = _without_key(exc, api_key)
             if attempt < _MAX_RETRIES:
                 wait = _RETRY_BACKOFF * (2 ** (attempt - 1))
                 _log(
-                    f"Transitland request failed: {exc}. Retrying in {wait:.1f}s "
+                    f"Transitland request failed: {last_error}. Retrying in {wait:.1f}s "
                     f"(attempt {attempt}/{_MAX_RETRIES})...",
                     level=30,
                 )
                 time.sleep(wait)
 
     raise TransitlandAPIError(
-        f"Transitland API request failed after {_MAX_RETRIES} attempts: {last_exception}"
+        f"Transitland API request failed after {_MAX_RETRIES} attempts: {last_error}"
     )
 
 
@@ -261,8 +278,8 @@ def _download_zip_to_memory(
         response.raise_for_status()
     except requests.exceptions.RequestException as exc:
         raise TransitlandAPIError(
-            f"Failed to download feed '{feed_key}': {exc}"
-        ) from exc
+            f"Failed to download feed '{feed_key}': {_without_key(exc, api_key)}"
+        ) from None
 
     buffer = BytesIO()
     total = int(response.headers.get("content-length", 0))
@@ -284,31 +301,10 @@ def _download_zip_to_memory(
     return buffer
 
 
-def _load_feed_from_buffer(buffer: BytesIO) -> GTFSFeed:
-    """Load a GTFSFeed from an in-memory zip buffer.
-
-    Parameters
-    ----------
-    buffer : BytesIO
-        In-memory zip file.
-
-    Returns
-    -------
-    GTFSFeed
-    """
-    with zipfile.ZipFile(buffer, "r") as zf:
-        # Extract to a temporary directory
-        import tempfile
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            zf.extractall(tmpdir)
-            return load_feed(tmpdir)
-
-
 def _get_feed_ids_from_stops(
     bbox_str: str,
     api_key: str,
-    max_pages: int = 50,
+    max_pages: int = _MAX_STOP_PAGES,
 ) -> set[str]:
     """Query the Transitland /stops endpoint to find feeds with actual stops in bbox.
 
@@ -326,7 +322,8 @@ def _get_feed_ids_from_stops(
     api_key : str
         Transitland API key.
     max_pages : int, optional
-        Maximum number of paginated requests (default 50).
+        Maximum number of paginated requests. Reaching it raises a warning,
+        because a feed whose stops lie beyond the limit would go unnoticed.
 
     Returns
     -------
@@ -334,10 +331,7 @@ def _get_feed_ids_from_stops(
         Set of feed onestop_ids that have at least one stop in the bbox.
     """
     url = f"{_TRANSITLAND_BASE_URL}/stops"
-    params: dict[str, Any] = {
-        "bbox": bbox_str,
-        "limit": 100,
-    }
+    params: dict[str, Any] = {"bbox": bbox_str, "limit": _STOPS_PER_PAGE}
     feed_ids: set[str] = set()
     after: int | None = None
 
@@ -349,22 +343,36 @@ def _get_feed_ids_from_stops(
         data = _request(url, page_params, api_key)
         stops = data.get("stops", [])
         if not stops:
-            break
+            return feed_ids
 
         for stop in stops:
-            feed_id = (
-                stop.get("feed_version", {})
-                .get("feed", {})
-                .get("onestop_id")
-            )
+            feed_id = stop.get("feed_version", {}).get("feed", {}).get("onestop_id")
             if feed_id:
                 feed_ids.add(feed_id)
 
         after = data.get("meta", {}).get("after")
         if after is None:
-            break
+            return feed_ids
 
+    warnings.warn(
+        f"Stopped checking stops after {max_pages * _STOPS_PER_PAGE:,}, so the feed list may "
+        "be incomplete for an area this large. Pass verify_stops=False to list every feed "
+        "whose registered area overlaps it.",
+        UserWarning,
+        stacklevel=3,
+    )
     return feed_ids
+
+
+def _polygon_bbox(polygon: Any) -> tuple[float, float, float, float]:
+    """Return a boundary's bounds in longitude and latitude."""
+    if isinstance(polygon, (gpd.GeoDataFrame, gpd.GeoSeries)):
+        if polygon.crs is not None:
+            polygon = polygon.to_crs(4326)
+        min_lon, min_lat, max_lon, max_lat = polygon.total_bounds
+    else:
+        min_lon, min_lat, max_lon, max_lat = polygon.bounds
+    return float(min_lon), float(min_lat), float(max_lon), float(max_lat)
 
 
 # ---------------------------------------------------------------------------
@@ -397,7 +405,7 @@ def search_feeds(
     bbox : tuple[float, float, float, float], optional
         Bounding box as ``(min_lon, min_lat, max_lon, max_lat)``.
     polygon : geopandas.GeoDataFrame or shapely.geometry.Polygon, optional
-        Geographic boundary. Total bounds are computed and converted to a
+        Geographic boundary. Its bounds, in longitude and latitude, become the
         bounding box for the API query.
     search : str, optional
         Free-text search query (e.g., ``"caltrain"``).
@@ -429,9 +437,7 @@ def search_feeds(
         If no spatial or text filter is provided.
     """
     if bbox is None and polygon is None and search is None:
-        raise ValueError(
-            "At least one of `bbox`, `polygon`, or `search` must be provided."
-        )
+        raise ValueError("At least one of `bbox`, `polygon`, or `search` must be provided.")
 
     key = _get_api_key(api_key)
     params: dict[str, Any] = {"spec": "gtfs", "limit": min(limit, 100)}
@@ -445,48 +451,15 @@ def search_feeds(
         params["bbox"] = bbox_str
 
     if polygon is not None:
-        # Handle GeoDataFrame or shapely Polygon
-        try:
-            import geopandas as gpd
-
-            if isinstance(polygon, gpd.GeoDataFrame):
-                # total_bounds: [minx, miny, maxx, maxy]
-                total_bounds = polygon.total_bounds
-                # Convert to tuple (min_lon, min_lat, max_lon, max_lat)
-                bbox_tuple = (float(total_bounds[0]), float(total_bounds[1]), float(total_bounds[2]), float(total_bounds[3]))
-            else:
-                # Assume shapely Polygon
-                minx, miny, maxx, maxy = polygon.bounds
-                bbox_tuple = (float(minx), float(miny), float(maxx), float(maxy))
-            bbox_str = _bbox_to_string(bbox_tuple)
-            params["bbox"] = bbox_str
-        except ImportError:
-            # Fallback: try shapely directly
-            try:
-                from shapely.geometry import Polygon
-
-                if isinstance(polygon, Polygon):
-                    minx, miny, maxx, maxy = polygon.bounds
-                    bbox_tuple = (float(minx), float(miny), float(maxx), float(maxy))
-                    bbox_str = _bbox_to_string(bbox_tuple)
-                    params["bbox"] = bbox_str
-                else:
-                    raise TypeError(
-                        "polygon must be a GeoDataFrame or shapely Polygon"
-                    )
-            except ImportError as exc:
-                raise ImportError(
-                    "geopandas or shapely is required for polygon input"
-                ) from exc
+        bbox_str = _bbox_to_string(_polygon_bbox(polygon))
+        params["bbox"] = bbox_str
 
     # For bbox/polygon queries, verify feeds by checking actual stops
     verified_feed_ids: set[str] | None = None
     if bbox_str is not None and verify_stops:
         verified_feed_ids = _get_feed_ids_from_stops(bbox_str, key)
         if not verified_feed_ids:
-            raise NoFeedsFoundError(
-                "No GTFS feeds found with stops in the specified area."
-            )
+            raise NoFeedsFoundError("No GTFS feeds found with stops in the specified area.")
 
     all_feeds: list[dict[str, Any]] = []
     after: int | None = None
@@ -503,10 +476,7 @@ def search_feeds(
 
         # Filter to verified feeds if we did stop-based verification
         if verified_feed_ids is not None:
-            feeds = [
-                f for f in feeds
-                if f.get("onestop_id") in verified_feed_ids
-            ]
+            feeds = [f for f in feeds if f.get("onestop_id") in verified_feed_ids]
 
         all_feeds.extend(feeds)
         page += 1
@@ -565,10 +535,15 @@ def download_feed(
         zip_path = output_dir / f"{feed_key}.zip"
         with open(zip_path, "wb") as f:
             f.write(buffer.getvalue())
-        feed = _load_feed_from_buffer(buffer)
-        return feed, zip_path
+        return load_zip(buffer, name=feed_key), zip_path
 
-    return _load_feed_from_buffer(buffer)
+    return load_zip(buffer, name=feed_key)
+
+
+def _value(record: dict[str, Any], key: str) -> str | None:
+    """Return a field of a search result as text, or None if it is empty."""
+    value = record.get(key)
+    return None if value is None or pd.isna(value) else str(value)
 
 
 def fetch_feeds(
@@ -584,6 +559,11 @@ def fetch_feeds(
     max_workers: int = 4,
 ) -> GTFSFeed | list[GTFSFeed]:
     """Search Transitland and download all matching GTFS feeds.
+
+    One unusable feed does not stop the others. Each feed that is skipped or
+    fails raises a warning naming it and the reason, and a merged feed records
+    them in ``missing``, because a study that loses an agency without notice
+    would simply be wrong.
 
     Parameters
     ----------
@@ -601,7 +581,7 @@ def fetch_feeds(
         If True (default), merge all downloaded feeds into a single
         :class:`GTFSFeed`. If False, return a list of individual feeds.
     skip_no_redistribution : bool, optional
-        If True (default), skip feeds that do not allow redistribution.
+        If True (default), skip feeds whose licence does not allow redistribution.
     output_dir : str or pathlib.Path, optional
         Directory to save raw zip files.
     timeout : int, optional
@@ -613,16 +593,16 @@ def fetch_feeds(
     Returns
     -------
     GTFSFeed or list[GTFSFeed]
-        Merged feed or list of feeds.
+        Merged feed or list of feeds, in the order of the search results.
 
     Raises
     ------
     TransitlandAPIError
-        If the API request or download fails.
+        If the search request fails.
     NoFeedsFoundError
-        If no feeds match the query.
+        If no feeds match the query, or none of them could be used.
     """
-    df = search_feeds(
+    table = search_feeds(
         bbox=bbox,
         polygon=polygon,
         search=search,
@@ -630,132 +610,79 @@ def fetch_feeds(
         api_key=api_key,
     )
 
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    feeds: list[GTFSFeed] = []
-    feed_keys: list[str] = []
-
-    for _, row in df.iterrows():
-        feed_key = row.get("onestop_id") or row.get("feed_key")
-        if pd.isna(feed_key):
+    targets: list[dict[str, Any]] = []
+    missing: list[dict[str, Any]] = []
+    for record in table.to_dict("records"):
+        feed_id = _value(record, "onestop_id") or _value(record, "feed_key")
+        if feed_id is None:
             continue
-
-        redistribution = row.get("license_redistribution")
-        if skip_no_redistribution and redistribution == "no":
-            _log(
-                f"Skipping feed '{feed_key}' — redistribution not allowed by license",
-                level=30,
+        if skip_no_redistribution and record.get("license_redistribution") == "no":
+            missing.append(
+                {
+                    "feed": feed_id,
+                    "name": _value(record, "name"),
+                    "reason": "licence does not allow redistribution "
+                    "(pass skip_no_redistribution=False to include it)",
+                }
             )
             continue
-        feed_keys.append(str(feed_key))
+        targets.append(record)
 
-    if not feed_keys:
-        raise NoFeedsFoundError(
-            "No feeds could be downloaded. All matching feeds were skipped or failed."
-        )
-
-    def _download_one(feed_key: str) -> GTFSFeed | None:
+    def _download_one(record: dict[str, Any]) -> GTFSFeed | str:
+        feed_id = _value(record, "onestop_id") or _value(record, "feed_key")
         try:
             result = download_feed(
-                feed_key,
+                feed_id,
                 api_key=api_key,
                 output_dir=output_dir,
                 timeout=timeout,
                 disable_tqdm=True,
             )
-            return result[0] if isinstance(result, tuple) else result
-        except TransitlandAPIError as exc:
-            _log(f"Failed to download feed '{feed_key}': {exc}", level=40)
-            return None
+            feed = result[0] if isinstance(result, tuple) else result
+            feed.validate()
+        except _FEED_ERRORS as error:
+            return str(error)
+        feed.name = _value(record, "name")
+        feed.onestop_id = _value(record, "onestop_id")
+        feed.feed_key = _value(record, "feed_key")
+        return feed
 
+    feeds: list[GTFSFeed] = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(_download_one, fk): fk for fk in feed_keys}
-        with tqdm(
-            total=len(feed_keys),
+        outcomes = executor.map(_download_one, targets)
+        for record, outcome in tqdm(
+            zip(targets, outcomes, strict=True),
+            total=len(targets),
             desc="Downloading feeds",
             unit="feed",
-        ) as pbar:
-            for future in as_completed(futures):
-                feed = future.result()
-                if feed is not None:
-                    feeds.append(feed)
-                pbar.update(1)
-                pbar.set_postfix_str(f"{len(feeds)}/{len(feed_keys)} ok")
+        ):
+            if isinstance(outcome, GTFSFeed):
+                feeds.append(outcome)
+            else:
+                missing.append(
+                    {
+                        "feed": _value(record, "onestop_id") or _value(record, "feed_key"),
+                        "name": _value(record, "name"),
+                        "reason": outcome,
+                    }
+                )
 
-    if not feeds:
-        raise NoFeedsFoundError(
-            "No feeds could be downloaded. All matching feeds were skipped or failed."
+    for record in missing:
+        warnings.warn(
+            f"Feed '{record['feed']}' was left out: {record['reason']}",
+            UserWarning,
+            stacklevel=2,
         )
 
+    if not feeds:
+        reasons = "; ".join(f"{record['feed']}: {record['reason']}" for record in missing)
+        raise NoFeedsFoundError(f"No feeds could be used. {reasons}")
+
     if merge:
-        merged = feeds[0]
-        for i, feed in enumerate(feeds[1:], start=1):
-            merged = merged.merge(feed, prefix=f"f{i}")
+        merged = merge_feeds(feeds)
+        merged.missing = missing
         tqdm.write(f"Merged {len(feeds)} feed(s) into a single GTFSFeed")
         return merged
 
     tqdm.write(f"Downloaded {len(feeds)} feed(s)")
     return feeds
-
-
-def transit_network_from_transitland(
-    bbox: tuple[float, float, float, float] | None = None,
-    polygon: Any | None = None,
-    search: str | None = None,
-    limit: int = _DEFAULT_LIMIT,
-    api_key: str | None = None,
-    output_dir: str | Path | None = None,
-    timeout: int = 300,
-    **network_kwargs: Any,
-) -> TransitNetwork:
-    """Search Transitland, download feeds, and create a transit network.
-
-    This is a high-level convenience that combines :func:`fetch_feeds` with
-    :func:`create_transit_network`.
-
-    Parameters
-    ----------
-    bbox : tuple[float, float, float, float], optional
-        Bounding box as ``(min_lon, min_lat, max_lon, max_lat)``.
-    polygon : geopandas.GeoDataFrame or shapely.geometry.Polygon, optional
-        Geographic boundary.
-    search : str, optional
-        Free-text search query.
-    limit : int, optional
-        Maximum number of feeds to return.
-    api_key : str, optional
-        Transitland API key.
-    output_dir : str or pathlib.Path, optional
-        Directory to save raw zip files.
-    timeout : int, optional
-        Download timeout in seconds.
-    **network_kwargs
-        Additional arguments forwarded to :func:`create_transit_network`
-        (e.g., ``day``, ``timerange``, ``date``, ``simplify``).
-
-    Returns
-    -------
-    TransitNetwork
-        Transit network ready for integration with a pedestrian network.
-
-    Raises
-    ------
-    TransitlandAPIError
-        If the API request or download fails.
-    NoFeedsFoundError
-        If no feeds match the query.
-    """
-    feed = fetch_feeds(
-        bbox=bbox,
-        polygon=polygon,
-        search=search,
-        limit=limit,
-        api_key=api_key,
-        merge=True,
-        output_dir=output_dir,
-        timeout=timeout,
-    )
-    # fetch_feeds with merge=True returns a single GTFSFeed
-    if isinstance(feed, list):
-        feed = feed[0]
-    return create_transit_network(feed, **network_kwargs)
