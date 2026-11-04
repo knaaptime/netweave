@@ -1,77 +1,37 @@
-"""GTFS headway statistics."""
-
+"""Measure headways from scheduled departures."""
 
 import pandas as pd
 
-from netweave._logging import status
-
 
 def compute_headways(
-    stop_times: pd.DataFrame,
-    trips: pd.DataFrame,
-    routes: pd.DataFrame,
-    stops: pd.DataFrame,
-    by: str = "route_stop",
+    departures: pd.DataFrame,
+    by: str | list[str],
+    window_minutes: float,
 ) -> pd.DataFrame:
-    """Compute headway statistics for a GTFS feed.
+    """Return the mean time between departures of each group, in minutes.
 
-    Headways are the time between consecutive vehicle arrivals at a stop
-    for a given route. The default statistic is mean headway / 2,
-    representing average passenger wait time under uniform arrival.
+    A group with a single departure has no gaps to measure, so the length of the
+    window stands in for its headway. Departures at the same moment count once.
 
     Parameters
     ----------
-    stop_times : pandas.DataFrame
-        GTFS stop_times table.
-    trips : pandas.DataFrame
-        GTFS trips table.
-    routes : pandas.DataFrame
-        GTFS routes table.
-    stops : pandas.DataFrame
-        GTFS stops table.
-    by : str, optional
-        Grouping level. Currently only 'route_stop' is supported.
+    departures : pandas.DataFrame
+        Departures inside the window, with a ``departure_sec`` column and the
+        grouping columns.
+    by : str or list of str
+        Columns that identify a group, such as a route-stop.
+    window_minutes : float
+        The length of the time window.
 
     Returns
     -------
     pandas.DataFrame
-        Headway statistics with columns:
-        - route_id, stop_id
-        - mean, std, min, max, median headways in minutes
+        The grouping columns and ``headway``.
     """
-    if by != "route_stop":
-        raise ValueError("Only by='route_stop' is currently supported")
-
-    # Merge trip info into stop_times
-    df = stop_times.merge(trips[["trip_id", "route_id"]], on="trip_id", how="left")
-
-    # Convert departure_time to seconds
-    from netweave.transform.schedule import timetoseconds
-    df["departure_sec"] = timetoseconds(df["departure_time"])
-
-    # Sort by route, stop, and time
-    df = df.sort_values(["route_id", "stop_id", "departure_sec"]).reset_index(drop=True)
-
-    # Vectorized headway calculation using groupby diff
-    df["headway_sec"] = df.groupby(["route_id", "stop_id"])["departure_sec"].diff()
-
-    # Filter out negative or zero headways (crossing midnight, data errors)
-    df = df[df["headway_sec"] > 0].copy()
-
-    if df.empty:
-        status("WARNING: No valid headways could be computed")
-        return pd.DataFrame()
-
-    # Aggregate statistics
-    stats = (
-        df.groupby(["route_id", "stop_id"])["headway_sec"]
-        .agg(["mean", "std", "min", "max", "median"])
-        .reset_index()
+    by = [by] if isinstance(by, str) else list(by)
+    distinct = (
+        departures[[*by, "departure_sec"]].drop_duplicates().sort_values([*by, "departure_sec"])
     )
-
-    # Convert to minutes
-    for col in ["mean", "std", "min", "max", "median"]:
-        stats[col] = stats[col] / 60.0
-
-    status(f"Computed headways for {len(stats)} route-stop pairs")
-    return stats
+    gaps = distinct.groupby(by, dropna=False)["departure_sec"].diff()
+    mean_gap = gaps.groupby([distinct[column] for column in by], dropna=False).mean() / 60.0
+    return mean_gap.fillna(window_minutes).rename("headway").reset_index()

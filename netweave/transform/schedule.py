@@ -1,191 +1,163 @@
-"""GTFS schedule processing: time parsing, interpolation, and unique IDs."""
+"""Read GTFS schedules: clock times, gaps in them, and frequency-based trips."""
 
-from typing import Optional
+import warnings
 
 import numpy as np
 import pandas as pd
 
-from netweave._logging import status
 from netweave.exceptions import TimeFormatError
 
 
-def timetoseconds(time_series: pd.Series) -> pd.Series:
-    """Convert HH:MM:SS strings to seconds since midnight.
+def timetoseconds(times: pd.Series) -> pd.Series:
+    """Convert HH:MM:SS strings to seconds since the start of the service day.
+
+    Hours may pass 24, as GTFS allows for service running after midnight, and
+    missing times stay missing.
 
     Parameters
     ----------
-    time_series : pandas.Series
+    times : pandas.Series
         Series of time strings.
 
     Returns
     -------
     pandas.Series
-        Seconds since midnight as integers.
+        Seconds as floats.
 
     Raises
     ------
     TimeFormatError
-        If a time string cannot be parsed.
+        If a time cannot be parsed.
     """
-    # Handle times > 24:00:00 (e.g., 25:30:00 for next-day service)
-    parts = time_series.str.split(":", expand=True)
+    seconds = pd.Series(np.nan, index=times.index, dtype=float)
+    present = times.notna()
+    if not present.any():
+        return seconds
+
+    parts = times[present].astype(str).str.strip().str.split(":", expand=True)
     if parts.shape[1] != 3:
         raise TimeFormatError("Time strings must be in HH:MM:SS format")
+    numbers = parts.apply(pd.to_numeric, errors="coerce")
+    if numbers.isna().to_numpy().any():
+        raise TimeFormatError("Time strings must be in HH:MM:SS format")
 
-    hours = parts[0].astype(int)
-    minutes = parts[1].astype(int)
-    seconds = parts[2].astype(int)
-
-    return hours * 3600 + minutes * 60 + seconds
-
-
-def seconds_to_time(seconds: pd.Series) -> pd.Series:
-    """Convert seconds since midnight to HH:MM:SS strings.
-
-    Parameters
-    ----------
-    seconds : pandas.Series
-        Seconds since midnight.
-
-    Returns
-    -------
-    pandas.Series
-        Time strings in HH:MM:SS format.
-    """
-    hours = (seconds // 3600).astype(int)
-    minutes = ((seconds % 3600) // 60).astype(int)
-    secs = (seconds % 60).astype(int)
-    return hours.astype(str).str.zfill(2) + ":" + minutes.astype(str).str.zfill(2) + ":" + secs.astype(str).str.zfill(2)
+    seconds[present] = numbers[0] * 3600 + numbers[1] * 60 + numbers[2]
+    return seconds
 
 
-def add_unique_ids(
-    df: pd.DataFrame,
-    prefix: str,
-    id_col: str = "unique_id",
-) -> pd.DataFrame:
-    """Add a unique ID column by concatenating agency/feed prefixes.
+def timed_stop_times(stop_times: pd.DataFrame, trip_ids: pd.Series) -> pd.DataFrame:
+    """Return the stop times of some trips with a ``departure_sec`` for every row.
 
-    Parameters
-    ----------
-    df : pandas.DataFrame
-        Input DataFrame.
-    prefix : str
-        Prefix to prepend (e.g., agency_id or feed_id).
-    id_col : str, optional
-        Name of the new unique ID column.
-
-    Returns
-    -------
-    pandas.DataFrame
-        DataFrame with the new unique ID column.
-    """
-    df = df.copy()
-    # Use the first column that looks like an ID as the base
-    base_col = None
-    for col in ["trip_id", "route_id", "stop_id", "agency_id"]:
-        if col in df.columns:
-            base_col = col
-            break
-    if base_col is None:
-        raise ValueError("No suitable ID column found for unique ID generation")
-    df[id_col] = prefix + "_" + df[base_col].astype(str)
-    return df
-
-
-def interpolate_stop_times(
-    stop_times: pd.DataFrame,
-    trip_ids: list[str],
-    interpolate_missing: bool = True,
-) -> pd.DataFrame:
-    """Interpolate missing arrival/departure times in stop_times.
-
-    Uses linear interpolation between known stop times for each trip.
+    Times left blank are interpolated evenly between the known times on either
+    side. A row that cannot be timed, because its trip has no known time before
+    or after it, is dropped with a warning.
 
     Parameters
     ----------
     stop_times : pandas.DataFrame
-        GTFS stop_times table with 'trip_id', 'stop_sequence',
-        'arrival_time', 'departure_time' columns.
-    trip_ids : list[str]
-        List of trip IDs to process.
-    interpolate_missing : bool, optional
-        If True (default), interpolate missing arrival/departure times.
-        If False, skip interpolation and return stop_times as-is.
-        Set to False when you know the feed has complete times.
+        GTFS stop_times table.
+    trip_ids : pandas.Series
+        The trips to keep.
 
     Returns
     -------
     pandas.DataFrame
-        stop_times with interpolated times.
+        The rows of those trips in order along each trip.
     """
-    df = stop_times[stop_times["trip_id"].isin(trip_ids)].copy()
-    if df.empty or not interpolate_missing:
-        return df
+    timed = stop_times[stop_times["trip_id"].isin(trip_ids)].copy()
 
-    # Convert times to seconds
-    for col in ["arrival_time", "departure_time"]:
-        if col in df.columns:
-            # Handle NaN/None values gracefully
-            valid_mask = df[col].notna() & (df[col] != "")
-            df[f"{col}_sec"] = pd.Series(index=df.index, dtype="Int64")
-            if valid_mask.any():
-                df.loc[valid_mask, f"{col}_sec"] = timetoseconds(df.loc[valid_mask, col])
+    def _seconds(column: str) -> pd.Series:
+        if column in timed.columns:
+            return timetoseconds(timed[column])
+        return pd.Series(np.nan, index=timed.index, dtype=float)
 
-    # Sort by trip and sequence
-    df = df.sort_values(["trip_id", "stop_sequence"]).reset_index(drop=True)
+    timed["departure_sec"] = _seconds("departure_time").fillna(_seconds("arrival_time"))
+    timed = timed.sort_values(["trip_id", "stop_sequence"], kind="stable")
 
-    # Vectorized interpolation per trip using groupby().transform()
-    for col in ["arrival_time_sec", "departure_time_sec"]:
-        if col in df.columns:
-            df[col] = df.groupby("trip_id")[col].transform(
-                lambda x: x.interpolate(method="linear") if len(x) > 1 else x
+    blank = timed["departure_sec"].isna()
+    if blank.any():
+        affected = timed["trip_id"].isin(timed.loc[blank, "trip_id"])
+        timed.loc[affected, "departure_sec"] = (
+            timed[affected]
+            .groupby("trip_id")["departure_sec"]
+            .transform(lambda times: times.interpolate(limit_area="inside"))
+        )
+        untimed = timed["departure_sec"].isna()
+        if untimed.any():
+            warnings.warn(
+                f"Dropped {int(untimed.sum())} stop times that could not be timed",
+                UserWarning,
+                stacklevel=3,
             )
-
-    # Convert back to HH:MM:SS
-    for col in ["arrival_time_sec", "departure_time_sec"]:
-        if col in df.columns:
-            base = col.replace("_sec", "")
-            df[base] = seconds_to_time(df[col].round().astype(int))
-            df = df.drop(columns=[col])
-
-    return df.reset_index(drop=True)
+            timed = timed[~untimed]
+    return timed
 
 
-def select_by_time_range(
-    df: pd.DataFrame,
-    start_time: str,
-    end_time: str,
-    time_col: str = "departure_time",
-    pad: Optional[str] = None,
-) -> pd.DataFrame:
-    """Select rows within a time range.
+def expand_frequencies(
+    stop_times: pd.DataFrame,
+    trips: pd.DataFrame,
+    frequencies: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Replace each frequency-based trip with one trip per scheduled departure.
 
     Parameters
     ----------
-    df : pandas.DataFrame
-        DataFrame with a time column in HH:MM:SS format.
-    start_time : str
-        Start time in HH:MM:SS.
-    end_time : str
-        End time in HH:MM:SS.
-    time_col : str, optional
-        Column containing time strings.
-    pad : str, optional
-        Additional padding after end_time in HH:MM:SS format.
+    stop_times : pandas.DataFrame
+        Stop times with a ``departure_sec`` column.
+    trips : pandas.DataFrame
+        GTFS trips table.
+    frequencies : pandas.DataFrame
+        GTFS frequencies table.
 
     Returns
     -------
-    pandas.DataFrame
-        Filtered DataFrame.
+    tuple
+        The stop times and trips, with templates replaced by their departures.
     """
-    start_sec = timetoseconds(pd.Series([start_time])).iloc[0]
-    end_sec = timetoseconds(pd.Series([end_time])).iloc[0]
-    if pad is not None:
-        pad_sec = timetoseconds(pd.Series([pad])).iloc[0]
-        end_sec += pad_sec
+    if frequencies.empty:
+        return stop_times, trips
+    periods = frequencies[
+        frequencies["trip_id"].isin(stop_times["trip_id"]) & (frequencies["headway_secs"] > 0)
+    ]
+    if periods.empty:
+        return stop_times, trips
 
-    df = df.copy()
-    df["_time_sec"] = timetoseconds(df[time_col])
-    mask = (df["_time_sec"] >= start_sec) & (df["_time_sec"] <= end_sec)
-    result = df.loc[mask].drop(columns=["_time_sec"]).copy()
-    return result.reset_index(drop=True)
+    starts = timetoseconds(periods["start_time"])
+    ends = timetoseconds(periods["end_time"])
+    departures = pd.DataFrame(
+        {
+            "trip_id": periods["trip_id"].to_numpy(),
+            "first_departure": [
+                np.arange(start, end, step)
+                for start, end, step in zip(starts, ends, periods["headway_secs"], strict=True)
+            ],
+        }
+    ).explode("first_departure")
+    departures = departures.dropna(subset=["first_departure"])
+    departures["first_departure"] = departures["first_departure"].astype(float)
+    departures["instance"] = (
+        departures["trip_id"] + "#" + departures.groupby("trip_id").cumcount().astype(str)
+    )
+
+    is_template = stop_times["trip_id"].isin(periods["trip_id"])
+    template_start = (
+        stop_times[is_template].groupby("trip_id")["departure_sec"].min().rename("template_start")
+    )
+    expanded = (
+        stop_times[is_template].merge(departures, on="trip_id").merge(template_start, on="trip_id")
+    )
+    expanded["departure_sec"] += expanded["first_departure"] - expanded["template_start"]
+    expanded["trip_id"] = expanded["instance"]
+    expanded = expanded.drop(columns=["first_departure", "instance", "template_start"])
+
+    is_template_trip = trips["trip_id"].isin(periods["trip_id"])
+    expanded_trips = trips[is_template_trip].merge(
+        departures[["trip_id", "instance"]], on="trip_id"
+    )
+    expanded_trips["trip_id"] = expanded_trips["instance"]
+    expanded_trips = expanded_trips.drop(columns="instance")
+
+    return (
+        pd.concat([stop_times[~is_template], expanded], ignore_index=True),
+        pd.concat([trips[~is_template_trip], expanded_trips], ignore_index=True),
+    )
