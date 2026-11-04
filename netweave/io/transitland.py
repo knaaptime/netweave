@@ -187,7 +187,8 @@ def _bbox_to_string(bbox: tuple[float, float, float, float]) -> str:
     """
     if not (isinstance(bbox, (tuple, list)) and len(bbox) == 4):
         raise ValueError(
-            f"bbox must be a tuple/list of 4 elements (min_lon, min_lat, max_lon, max_lat), got: {bbox}"
+            "bbox must be a tuple/list of 4 elements "
+            f"(min_lon, min_lat, max_lon, max_lat), got: {bbox}"
         )
     min_lon, min_lat, max_lon, max_lat = bbox
     return f"{min_lon},{min_lat},{max_lon},{max_lat}"
@@ -610,7 +611,7 @@ def fetch_feeds(
         api_key=api_key,
     )
 
-    targets: list[dict[str, Any]] = []
+    targets: list[tuple[str, dict[str, Any]]] = []
     missing: list[dict[str, Any]] = []
     for record in table.to_dict("records"):
         feed_id = _value(record, "onestop_id") or _value(record, "feed_key")
@@ -626,10 +627,10 @@ def fetch_feeds(
                 }
             )
             continue
-        targets.append(record)
+        targets.append((feed_id, record))
 
-    def _download_one(record: dict[str, Any]) -> GTFSFeed | str:
-        feed_id = _value(record, "onestop_id") or _value(record, "feed_key")
+    def _download_one(target: tuple[str, dict[str, Any]]) -> GTFSFeed | str:
+        feed_id, record = target
         try:
             result = download_feed(
                 feed_id,
@@ -650,7 +651,7 @@ def fetch_feeds(
     feeds: list[GTFSFeed] = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         outcomes = executor.map(_download_one, targets)
-        for record, outcome in tqdm(
+        for (feed_id, record), outcome in tqdm(
             zip(targets, outcomes, strict=True),
             total=len(targets),
             desc="Downloading feeds",
@@ -659,13 +660,7 @@ def fetch_feeds(
             if isinstance(outcome, GTFSFeed):
                 feeds.append(outcome)
             else:
-                missing.append(
-                    {
-                        "feed": _value(record, "onestop_id") or _value(record, "feed_key"),
-                        "name": _value(record, "name"),
-                        "reason": outcome,
-                    }
-                )
+                missing.append({"feed": feed_id, "name": _value(record, "name"), "reason": outcome})
 
     for record in missing:
         warnings.warn(

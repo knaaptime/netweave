@@ -24,14 +24,13 @@ dependencies = [
     "lazy-loader >=0.4",
     "numpy >=1.26",
     "pandas >=2.2",
+    "pyproj >=3.3",
     "scikit-learn >=1.4",
     "shapely >=2.0",
     "scipy >=1.10",
-    "tables >=3.10",
     "requests >=2.9",
     "pyyaml >=6.0",
     "tqdm >=4.60",
-    "matplotlib >=3.5",
     "pandarm"
 ]
 

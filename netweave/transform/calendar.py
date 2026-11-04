@@ -150,7 +150,7 @@ def select_service(
         trips = _of_feed(feed.trips, prefix)
         calendar = _of_feed(feed.calendar, prefix)
         calendar_dates = _of_feed(feed.calendar_dates, prefix)
-        chosen = date or _busiest_date(trips, calendar, calendar_dates, day)
+        chosen = date if day is None else _busiest_date(trips, calendar, calendar_dates, day)
         active = set() if chosen is None else _services_on(calendar, calendar_dates, chosen)
         if trips["service_id"].isin(active).any():
             service_ids |= active

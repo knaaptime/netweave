@@ -40,7 +40,6 @@ class Settings:
     debug: bool = field(default=False)
     gtfs_api: dict[str, str] = field(
         default_factory=lambda: {
-            "mobilitydatabase": "https://api.mobilitydatabase.org/v1",
             "transitland": "https://transit.land/api/v2/rest",
         }
     )

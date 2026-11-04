@@ -364,9 +364,9 @@ def load_zip(source: Any, name: str | None = None) -> GTFSFeed:
 
         tables: dict[str, pd.DataFrame] = {}
         for table in _GTFS_TABLES:
-            info = members.get(table)
-            if info is not None and info.file_size > 0:
-                with archive.open(info) as handle:
+            found = members.get(table)
+            if found is not None and found.file_size > 0:
+                with archive.open(found) as handle:
                     tables[table] = _read_gtfs_csv(handle)
     return GTFSFeed(**tables, name=name)
 

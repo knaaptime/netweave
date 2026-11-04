@@ -9,7 +9,7 @@ class NetweaveError(Exception):
 UrbanAccessError = NetweaveError
 
 
-class InvalidGTFS(NetweaveError):
+class InvalidGTFS(NetweaveError):  # noqa: N818
     """Raised when a GTFS feed fails validation."""
 
 
@@ -21,7 +21,7 @@ class EmptyNetworkError(NetweaveError):
     """Raised when a network has zero edges or nodes."""
 
 
-class MissingGTFSFile(NetweaveError):
+class MissingGTFSFile(NetweaveError):  # noqa: N818
     """Raised when a required GTFS file is missing."""
 
 
