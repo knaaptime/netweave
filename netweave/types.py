@@ -45,32 +45,6 @@ class OSMNetwork:
             raise TypeError("nodes must be a pandas DataFrame or geopandas GeoDataFrame")
 
 
-@dataclass(frozen=True, slots=True)
-class IntegratedNetwork:
-    """Container for an integrated transit + pedestrian network."""
-
-    edges: pd.DataFrame
-    nodes: pd.DataFrame
-    connector_edges: pd.DataFrame
-    transit_edges: pd.DataFrame
-    transit_nodes: pd.DataFrame
-    osm_edges: pd.DataFrame
-    osm_nodes: pd.DataFrame
-
-    def __post_init__(self) -> None:
-        for name, df in [
-            ("edges", self.edges),
-            ("nodes", self.nodes),
-            ("connector_edges", self.connector_edges),
-            ("transit_edges", self.transit_edges),
-            ("transit_nodes", self.transit_nodes),
-            ("osm_edges", self.osm_edges),
-            ("osm_nodes", self.osm_nodes),
-        ]:
-            if not isinstance(df, (pd.DataFrame, gpd.GeoDataFrame)):
-                raise TypeError(f"{name} must be a pandas DataFrame or geopandas GeoDataFrame")
-
-
 # ---------------------------------------------------------------------------
 # Protocols
 # ---------------------------------------------------------------------------

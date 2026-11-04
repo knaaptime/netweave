@@ -20,7 +20,6 @@ from .exceptions import NetweaveError as NetweaveError
 from .exceptions import UrbanAccessError as UrbanAccessError
 
 # Types
-from .types import IntegratedNetwork as IntegratedNetwork
 from .types import OSMNetwork as OSMNetwork
 from .types import TransitNetwork as TransitNetwork
 

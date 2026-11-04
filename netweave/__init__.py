@@ -1,9 +1,10 @@
 """Netweave: GTFS transit and OSM pedestrian network integration."""
 
+from importlib.metadata import PackageNotFoundError, version
 
 try:
-    from netweave._version import version as __version__
-except ImportError:
+    __version__ = version("netweave")
+except PackageNotFoundError:
     __version__ = "unknown"
 
 import lazy_loader as lazy
