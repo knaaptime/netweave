@@ -49,12 +49,11 @@ dev = [
     "mypy",
 ]
 docs = [
-    "myst-parser",
-    "nbsphinx",
-    "numpydoc",
-    "sphinx",
-    "sphinxcontrib-bibtex",
-    "sphinx_bootstrap_theme",
+    "myst-nb",
+    "packaging",
+    "sphinx>=7",
+    "sphinx-copybutton",
+    "sphinx-immaterial",
 ]
 all = [
     "netweave[plus,dev,docs]"

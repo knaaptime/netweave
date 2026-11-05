@@ -67,3 +67,5 @@ tmtagsHistory
 *.sublime-workspace
 .bundle
 .ipynb_checkpoints
+# Sphinx autosummary output
+docs/source/generated/
