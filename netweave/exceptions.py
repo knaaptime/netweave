@@ -17,10 +17,6 @@ class EmptyNetworkError(NetweaveError):
     """Raised when a network has zero edges or nodes."""
 
 
-class MissingGTFSFile(NetweaveError):  # noqa: N818
-    """Raised when a required GTFS file is missing."""
-
-
 class TimeFormatError(NetweaveError):
     """Raised when a time string does not match the expected HH:MM:SS format."""
 

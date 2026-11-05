@@ -13,8 +13,6 @@ class Settings:
 
     Parameters
     ----------
-    data_folder : str
-        Root directory for downloaded and generated data.
     log_folder : str
         Directory for log files.
     log_file : str
@@ -28,11 +26,8 @@ class Settings:
         to file. If False (default), only concise status messages are shown.
     gtfs_api : dict[str, str]
         Mapping of GTFS feed source names to API base URLs.
-    encoding : str
-        Text encoding for GTFS files.
     """
 
-    data_folder: str = field(default="data")
     log_folder: str = field(default="logs")
     log_file: str = field(default="netweave.log")
     log_console: bool = field(default=True)
@@ -43,19 +38,16 @@ class Settings:
             "transitland": "https://transit.land/api/v2/rest",
         }
     )
-    encoding: str = field(default="utf-8")
 
     def to_dict(self) -> dict[str, Any]:
         """Return settings as a plain dictionary."""
         return {
-            "data_folder": self.data_folder,
             "log_folder": self.log_folder,
             "log_file": self.log_file,
             "log_console": self.log_console,
             "log_level": self.log_level,
             "debug": self.debug,
             "gtfs_api": self.gtfs_api,
-            "encoding": self.encoding,
         }
 
     @classmethod

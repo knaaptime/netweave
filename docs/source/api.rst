@@ -112,7 +112,6 @@ Every error netweave raises derives from :class:`NetweaveError`.
 
    NetweaveError
    InvalidGTFS
-   MissingGTFSFile
    TimeFormatError
    CalendarSelectionError
    EmptyNetworkError

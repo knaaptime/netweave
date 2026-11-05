@@ -15,7 +15,6 @@ from .config import settings as settings
 from .exceptions import CalendarSelectionError as CalendarSelectionError
 from .exceptions import EmptyNetworkError as EmptyNetworkError
 from .exceptions import InvalidGTFS as InvalidGTFS
-from .exceptions import MissingGTFSFile as MissingGTFSFile
 from .exceptions import NetweaveError as NetweaveError
 from .exceptions import NetworkIntegrationError as NetworkIntegrationError
 from .exceptions import NoFeedsFoundError as NoFeedsFoundError
