@@ -30,7 +30,7 @@ def _services_on(calendar: pd.DataFrame, calendar_dates: pd.DataFrame, date: str
     """Return the services running on one date: the weekly pattern plus its exceptions."""
     active: set[str] = set()
     if not calendar.empty:
-        weekday = DAYS[pd.to_datetime(date, format="%Y%m%d").dayofweek]
+        weekday = DAYS[pd.to_datetime(date, format="%Y%m%d").day_of_week]
         runs = (
             (calendar[weekday].astype(str) == "1")
             & (calendar["start_date"] <= date)
@@ -67,7 +67,7 @@ def _busiest_date(
 
     added = _exceptions(calendar_dates, "1")
     if not added.empty:
-        weekdays = pd.to_datetime(added["date"], format="%Y%m%d").dt.dayofweek
+        weekdays = pd.to_datetime(added["date"], format="%Y%m%d").dt.day_of_week
         pairs.append(added[weekdays == DAYS.index(day)])
 
     if not pairs:
