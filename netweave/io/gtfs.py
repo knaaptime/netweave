@@ -110,20 +110,31 @@ def _normalized(table: pd.DataFrame) -> pd.DataFrame:
 
 @dataclass
 class GTFSFeed:
-    """Container for GTFS feed tables.
+    """The tables of a GTFS feed, with a record of where they came from.
 
-    Each table attribute is a pandas DataFrame representing a GTFS file, and
-    optional files default to empty DataFrames. Identifiers are always text;
-    ``stop_sequence``, coordinates and ``headway_secs`` are always numeric.
+    Read one with :func:`netweave.load_feed`, or find and download one with
+    :func:`netweave.fetch_feeds`.
 
-    Parameters
+    Each GTFS file is an attribute of the same name holding a
+    :class:`pandas.DataFrame`. Every feed has ``agency``, ``routes``, ``trips``,
+    ``stop_times`` and ``stops``. ``calendar``, ``calendar_dates``, ``shapes``,
+    ``frequencies``, ``transfers`` and ``feed_info`` are empty when the feed lacks
+    them. Identifiers are always text, and ``stop_sequence``, coordinates and
+    ``headway_secs`` are always numbers, however the feed wrote them.
+
+    Attributes
     ----------
-    name, onestop_id, feed_key : str, optional
-        Where the feed came from, when known.
+    name : str or None
+        The feed's name, when known.
+    onestop_id : str or None
+        The feed's Transitland Onestop ID, when known.
+    feed_key : str or None
+        The feed's Transitland key, when known.
     sources : list of dict
-        One record per original feed, filled in when feeds are merged.
+        One record per original feed, giving its prefix, ``onestop_id``,
+        ``feed_key`` and name. Empty until feeds are merged.
     missing : list of dict
-        Feeds that were requested but could not be supplied, with reasons.
+        Feeds that were requested but could not be used, with the reason for each.
     """
 
     agency: pd.DataFrame = field(default_factory=pd.DataFrame)
