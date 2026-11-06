@@ -32,6 +32,15 @@ export TRANSITLAND_API_KEY="your-key"
 
 Feeds you already have need no key: read them with `netweave.load_feed`.
 
+## Building the docs
+
+```bash
+cd docs
+make html
+```
+
+Every build runs the user guide from start to finish, as a test of the whole pipeline, so it needs `TRANSITLAND_API_KEY` and network access. Clear the notebook's outputs before committing it, with `make clearnbs`.
+
 ## Verifying the installation
 
 ```python

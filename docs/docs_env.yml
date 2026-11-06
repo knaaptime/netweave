@@ -17,6 +17,11 @@ dependencies:
   - scipy>=1.10
   - shapely>=2.0
   - tqdm>=4.60
+  # user guide
+  - geodatasets
+  - matplotlib
+  - osmnx
+  - pyarrow
   # docs
   - myst-nb
   - packaging
