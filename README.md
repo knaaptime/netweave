@@ -61,7 +61,7 @@ A network represents one time window, so build one for each period you want to c
 
 `day="monday"` uses the busiest Monday in each feed, chosen separately because the feeds of different agencies need not be valid at the same time. `date="20260302"` uses that date in every feed. Service exceptions apply in both cases, and `metadata` records the date each feed used.
 
-Merging gives every feed's IDs a prefix from its Onestop ID, so IDs from different agencies cannot collide. A feed that cannot be used, or whose licence does not allow redistribution, is left out with a warning and listed in `feed.missing`.
+Merging gives every feed's IDs a prefix from its Onestop ID, so IDs from different agencies cannot collide. Every matching feed is collected, whatever its licence says about redistribution. Transitland does not serve a feed whose licence forbids redistribution, so `fetch_feeds` downloads any feed Transitland does not supply from the source URL it lists. A feed that cannot be used is left out with a warning and listed in `feed.missing`.
 
 ## Working with the result
 

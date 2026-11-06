@@ -277,15 +277,25 @@ def _download_zip_to_memory(
     try:
         response = requests.get(url, params=params, stream=True, timeout=timeout)
         response.raise_for_status()
+        buffer = _stream_to_memory(response, f"{feed_key}.zip", disable_tqdm)
     except requests.exceptions.RequestException as exc:
         raise TransitlandAPIError(
             f"Failed to download feed '{feed_key}': {_without_key(exc, api_key)}"
         ) from None
 
+    if not zipfile.is_zipfile(buffer):
+        raise TransitlandAPIError(f"Transitland did not return a zip file for feed '{feed_key}'")
+    buffer.seek(0)
+    _log(f"Download complete for feed '{feed_key}'")
+    return buffer
+
+
+def _stream_to_memory(response: requests.Response, label: str, disable_tqdm: bool) -> BytesIO:
+    """Read a streamed response into memory, showing progress unless disabled."""
     buffer = BytesIO()
     total = int(response.headers.get("content-length", 0))
     with tqdm(
-        desc=f"{feed_key}.zip",
+        desc=label,
         total=total,
         unit="B",
         unit_scale=True,
@@ -296,10 +306,51 @@ def _download_zip_to_memory(
             if chunk:
                 buffer.write(chunk)
                 pbar.update(len(chunk))
-
     buffer.seek(0)
-    _log(f"Download complete for feed '{feed_key}'")
     return buffer
+
+
+def _download_from_source(
+    feed_key: str,
+    source_url: str,
+    refusal: TransitlandAPIError,
+    timeout: int,
+    disable_tqdm: bool,
+) -> BytesIO:
+    """Download a feed from the address its publisher serves it at.
+
+    The API key belongs to Transitland, so it is not sent to this host.
+
+    Parameters
+    ----------
+    feed_key : str
+        Feed ID or Onestop ID, used to label progress.
+    source_url : str
+        The publisher's address for the feed.
+    refusal : TransitlandAPIError
+        Why Transitland did not supply the feed.
+    timeout : int
+        Download timeout in seconds.
+    disable_tqdm : bool
+        If True, suppress the progress bar.
+
+    Returns
+    -------
+    BytesIO
+        The downloaded file.
+
+    Raises
+    ------
+    TransitlandAPIError
+        If the download fails, giving both reasons.
+    """
+    _log(f"{refusal}. Trying the source URL of feed '{feed_key}'.")
+    try:
+        response = requests.get(source_url, stream=True, timeout=timeout)
+        response.raise_for_status()
+        return _stream_to_memory(response, f"{feed_key}.zip", disable_tqdm)
+    except requests.exceptions.RequestException as exc:
+        raise TransitlandAPIError(f"{refusal}. Its source URL also failed: {exc}") from None
 
 
 def _get_feed_ids_from_stops(
@@ -500,8 +551,12 @@ def download_feed(
     output_dir: str | Path | None = None,
     timeout: int = 300,
     disable_tqdm: bool = False,
+    source_url: str | None = None,
 ) -> GTFSFeed | tuple[GTFSFeed, Path]:
     """Download the latest GTFS feed version from Transitland.
+
+    Transitland serves a feed only if its licence allows redistribution. Given a
+    ``source_url``, a feed Transitland does not supply comes from there instead.
 
     Parameters
     ----------
@@ -516,6 +571,10 @@ def download_feed(
         Download timeout in seconds.
     disable_tqdm : bool, optional
         If True, suppress the download progress bar.
+    source_url : str, optional
+        The address the feed's publisher serves it at, as listed in the
+        ``static_current`` column of :func:`netweave.search_feeds`. The API key
+        is not sent to it.
 
     Returns
     -------
@@ -528,7 +587,12 @@ def download_feed(
         If the download fails.
     """
     key = _get_api_key(api_key)
-    buffer = _download_zip_to_memory(feed_key, key, timeout=timeout, disable_tqdm=disable_tqdm)
+    try:
+        buffer = _download_zip_to_memory(feed_key, key, timeout=timeout, disable_tqdm=disable_tqdm)
+    except TransitlandAPIError as refusal:
+        if source_url is None:
+            raise
+        buffer = _download_from_source(feed_key, source_url, refusal, timeout, disable_tqdm)
 
     if output_dir is not None:
         output_dir = Path(output_dir)
@@ -554,17 +618,21 @@ def fetch_feeds(
     limit: int = _DEFAULT_LIMIT,
     api_key: str | None = None,
     merge: bool = True,
-    skip_no_redistribution: bool = True,
     output_dir: str | Path | None = None,
     timeout: int = 300,
     max_workers: int = 4,
 ) -> GTFSFeed | list[GTFSFeed]:
     """Search Transitland and download all matching GTFS feeds.
 
-    One unusable feed does not stop the others. Each feed that is skipped or
-    fails raises a warning naming it and the reason, and a merged feed records
-    them in ``missing``, because a study that loses an agency without notice
-    would simply be wrong.
+    Every matching feed is collected, whatever its licence says about
+    redistribution, because netweave only downloads and analyzes feeds. Transitland
+    does not serve a feed whose licence forbids redistribution, so a feed it does not
+    supply comes from the source URL it lists.
+
+    One unusable feed does not stop the others. Each feed that fails raises a
+    warning naming it and the reason, and a merged feed records them in
+    ``missing``, because a study that loses an agency without notice would simply
+    be wrong.
 
     Parameters
     ----------
@@ -581,8 +649,6 @@ def fetch_feeds(
     merge : bool, optional
         If True (default), merge all downloaded feeds into a single
         :class:`GTFSFeed`. If False, return a list of individual feeds.
-    skip_no_redistribution : bool, optional
-        If True (default), skip feeds whose licence does not allow redistribution.
     output_dir : str or pathlib.Path, optional
         Directory to save raw zip files.
     timeout : int, optional
@@ -612,22 +678,10 @@ def fetch_feeds(
     )
 
     targets: list[tuple[str, dict[str, Any]]] = []
-    missing: list[dict[str, Any]] = []
     for record in table.to_dict("records"):
         feed_id = _value(record, "onestop_id") or _value(record, "feed_key")
-        if feed_id is None:
-            continue
-        if skip_no_redistribution and record.get("license_redistribution") == "no":
-            missing.append(
-                {
-                    "feed": feed_id,
-                    "name": _value(record, "name"),
-                    "reason": "licence does not allow redistribution "
-                    "(pass skip_no_redistribution=False to include it)",
-                }
-            )
-            continue
-        targets.append((feed_id, record))
+        if feed_id is not None:
+            targets.append((feed_id, record))
 
     def _download_one(target: tuple[str, dict[str, Any]]) -> GTFSFeed | str:
         feed_id, record = target
@@ -638,6 +692,7 @@ def fetch_feeds(
                 output_dir=output_dir,
                 timeout=timeout,
                 disable_tqdm=True,
+                source_url=_value(record, "static_current"),
             )
             feed = result[0] if isinstance(result, tuple) else result
             feed.validate()
@@ -649,6 +704,7 @@ def fetch_feeds(
         return feed
 
     feeds: list[GTFSFeed] = []
+    missing: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         outcomes = executor.map(_download_one, targets)
         for (feed_id, record), outcome in tqdm(

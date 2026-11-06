@@ -2,6 +2,7 @@
 
 import io
 import time
+import warnings
 import zipfile
 
 import geopandas as gpd
@@ -16,13 +17,17 @@ from netweave.io.transitland import fetch_feeds, search_feeds
 KEY = "secret-test-key"
 
 
-def feed_record(onestop_id, name=None, key=1, redistribution="yes"):
+def source_url(onestop_id):
+    return f"https://agency.example/{onestop_id}.zip"
+
+
+def feed_record(onestop_id, name=None, key=1, redistribution="yes", has_source=True):
     return {
         "id": key,
         "onestop_id": onestop_id,
         "name": name,
         "spec": "gtfs",
-        "urls": {"static_current": "https://example.com/feed.zip"},
+        "urls": {"static_current": source_url(onestop_id)} if has_source else {},
         "license": {"redistribution_allowed": redistribution},
         "feed_state": {},
     }
@@ -50,18 +55,26 @@ class FakeResponse:
 
 
 class FakeTransitland:
-    """Stand in for the three Transitland endpoints the client uses."""
+    """Stand in for the three Transitland endpoints the client uses, and agency servers."""
 
-    def __init__(self, feeds=None, stop_pages=None, feed_pages=None, downloads=None, slow=()):
+    def __init__(
+        self, feeds=None, stop_pages=None, feed_pages=None, downloads=None, slow=(), sources=None
+    ):
         self.feed_pages = feed_pages or {None: (feeds or [], None)}
         self.stop_pages = stop_pages or {None: ([], None)}
         self.downloads = downloads or {}
+        self.sources = sources or {}
         self.slow = slow
         self.calls = []
 
     def get(self, url, params=None, **_):
         params = params or {}
         self.calls.append((url, dict(params)))
+        if url.startswith("https://agency.example/"):
+            source = self.sources.get(url, 404)
+            if isinstance(source, int):
+                return FakeResponse(url, params, status=source)
+            return FakeResponse(url, params, content=source)
         if url.endswith("/download_latest_feed_version"):
             onestop_id = url.split("/feeds/")[1].split("/")[0]
             if onestop_id in self.slow:
@@ -281,18 +294,114 @@ class TestFetchFeeds:
         assert KEY not in str(caught[0].message)
         assert KEY not in feed.missing[0]["reason"]
 
-    def test_licence_skip_is_visible_and_can_be_overridden(self, install, gtfs_zip) -> None:
-        records = [feed_record("f-closed", redistribution="no"), feed_record("f-open")]
-        downloads = {"f-closed": gtfs_zip(), "f-open": gtfs_zip()}
-        install(FakeTransitland(feeds=records, downloads=downloads))
-        with pytest.warns(UserWarning, match="f-closed.*skip_no_redistribution"):
+    def test_a_restrictive_licence_does_not_exclude_a_feed(self, install, gtfs_zip) -> None:
+        api = install(
+            FakeTransitland(
+                feeds=[feed_record("f-closed", redistribution="no")],
+                downloads={"f-closed": gtfs_zip()},
+            )
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
             feed = fetch_feeds(search="x", api_key=KEY)
-        assert [source["prefix"] for source in feed.sources] == ["f-open"]
-        assert feed.missing[0]["feed"] == "f-closed"
-
-        feed = fetch_feeds(search="x", api_key=KEY, skip_no_redistribution=False)
-        assert [source["prefix"] for source in feed.sources] == ["f-closed", "f-open"]
+        assert [source["prefix"] for source in feed.sources] == ["f-closed"]
         assert feed.missing == []
+        assert api.params_for(".zip") == []
+
+    def test_a_feed_transitland_refuses_comes_from_its_source(self, install, gtfs_zip) -> None:
+        install(
+            FakeTransitland(
+                feeds=[feed_record("f-closed", redistribution="no"), feed_record("f-open")],
+                downloads={"f-closed": 401, "f-open": gtfs_zip()},
+                sources={source_url("f-closed"): gtfs_zip()},
+            )
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            feed = fetch_feeds(search="x", api_key=KEY)
+        assert [source["prefix"] for source in feed.sources] == ["f-closed", "f-open"]
+        assert feed.stops["stop_id"].tolist()[0] == "f-closed_1000"
+        assert feed.missing == []
+
+    def test_the_api_key_is_not_sent_to_the_source(self, install, gtfs_zip) -> None:
+        api = install(
+            FakeTransitland(
+                feeds=[feed_record("f-closed")],
+                downloads={"f-closed": 401},
+                sources={source_url("f-closed"): gtfs_zip()},
+            )
+        )
+        fetch_feeds(search="x", api_key=KEY)
+        requested = [(url, params) for url, params in api.calls if "agency.example" in url]
+        assert requested == [(source_url("f-closed"), {})]
+
+    def test_a_non_zip_from_transitland_comes_from_the_source(self, install, gtfs_zip) -> None:
+        install(
+            FakeTransitland(
+                feeds=[feed_record("f-a")],
+                downloads={"f-a": b"<html>not allowed</html>"},
+                sources={source_url("f-a"): gtfs_zip()},
+            )
+        )
+        assert [source["prefix"] for source in fetch_feeds(search="x", api_key=KEY).sources] == [
+            "f-a"
+        ]
+
+    def test_saves_a_download_from_the_source(self, install, gtfs_zip, tmp_path) -> None:
+        archive = gtfs_zip()
+        install(
+            FakeTransitland(
+                feeds=[feed_record("f-a")],
+                downloads={"f-a": 401},
+                sources={source_url("f-a"): archive},
+            )
+        )
+        fetch_feeds(search="x", api_key=KEY, output_dir=tmp_path / "zips")
+        assert (tmp_path / "zips" / "f-a.zip").read_bytes() == archive
+
+    def test_when_both_refuse_the_warning_gives_both_reasons(self, install, gtfs_zip) -> None:
+        install(
+            FakeTransitland(
+                feeds=[feed_record("f-gone"), feed_record("f-good")],
+                downloads={"f-gone": 401, "f-good": gtfs_zip()},
+                sources={source_url("f-gone"): 503},
+            )
+        )
+        with pytest.warns(UserWarning, match="f-gone") as caught:
+            feed = fetch_feeds(search="x", api_key=KEY)
+        reason = feed.missing[0]["reason"]
+        assert "401" in reason
+        assert "503" in reason
+        assert KEY not in reason
+        assert KEY not in str(caught[0].message)
+
+    def test_a_feed_without_a_source_gives_transitlands_reason(self, install, gtfs_zip) -> None:
+        install(
+            FakeTransitland(
+                feeds=[feed_record("f-gone", has_source=False), feed_record("f-good")],
+                downloads={"f-gone": 401, "f-good": gtfs_zip()},
+            )
+        )
+        with pytest.warns(UserWarning, match="f-gone.*401"):
+            feed = fetch_feeds(search="x", api_key=KEY)
+        assert [record["feed"] for record in feed.missing] == ["f-gone"]
+
+    def test_a_bad_archive_from_the_source_is_left_out(self, install, gtfs_zip) -> None:
+        install(
+            FakeTransitland(
+                feeds=[feed_record("f-bad"), feed_record("f-good")],
+                downloads={"f-bad": 401, "f-good": gtfs_zip()},
+                sources={source_url("f-bad"): b"<html>sign in</html>"},
+            )
+        )
+        with pytest.warns(UserWarning, match="f-bad"):
+            feed = fetch_feeds(search="x", api_key=KEY)
+        assert [source["prefix"] for source in feed.sources] == ["f-good"]
+
+    def test_skipping_by_licence_is_no_longer_an_option(self, install) -> None:
+        install(FakeTransitland())
+        with pytest.raises(TypeError, match="skip_no_redistribution"):
+            fetch_feeds(search="x", api_key=KEY, skip_no_redistribution=True)
 
     def test_raises_with_reasons_when_no_feed_succeeds(self, install) -> None:
         install(FakeTransitland(feeds=[feed_record("f-bad")], downloads={"f-bad": b"not a zip"}))

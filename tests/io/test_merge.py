@@ -130,8 +130,8 @@ class TestRepeatedMerging:
 
     def test_missing_feed_records_carry_through(self, two_feeds) -> None:
         first, second = two_feeds
-        first.missing = [{"feed": "f-x", "reason": "licence"}]
-        assert merge_feeds([first, second]).missing == [{"feed": "f-x", "reason": "licence"}]
+        first.missing = [{"feed": "f-x", "reason": "corrupt zip"}]
+        assert merge_feeds([first, second]).missing == [{"feed": "f-x", "reason": "corrupt zip"}]
 
     def test_no_feeds_is_refused(self) -> None:
         with pytest.raises(ValueError, match="at least one"):

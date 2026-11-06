@@ -213,6 +213,6 @@ class TestMultipleFeeds:
 
     def test_missing_feeds_reach_the_metadata(self, line_tables, write_feed) -> None:
         feed = load_feed(write_feed(line_tables()))
-        feed.missing = [{"feed": "f-x", "name": None, "reason": "licence"}]
+        feed.missing = [{"feed": "f-x", "name": None, "reason": "corrupt zip"}]
         network = create_transit_network(feed, day="monday", timerange=AM)
         assert network.metadata["missing_feeds"] == feed.missing
