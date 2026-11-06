@@ -1,6 +1,7 @@
 """Choose which GTFS service a transit network represents."""
 
 import warnings
+from typing import Any
 
 import pandas as pd
 
@@ -45,13 +46,30 @@ def _services_on(calendar: pd.DataFrame, calendar_dates: pd.DataFrame, date: str
     return active
 
 
+def _stated_validity(feed_info: pd.DataFrame) -> tuple[str, str]:
+    """Return the dates a feed says it is valid for, open-ended where it does not say."""
+
+    def bound(column: str, pick: Any, default: str) -> str:
+        if column not in feed_info.columns:
+            return default
+        values = feed_info[column].dropna()
+        return str(pick(values)) if len(values) else default
+
+    return bound("feed_start_date", min, "00000000"), bound("feed_end_date", max, "99999999")
+
+
 def _busiest_date(
     trips: pd.DataFrame,
     calendar: pd.DataFrame,
     calendar_dates: pd.DataFrame,
+    feed_info: pd.DataFrame,
     day: str,
 ) -> str | None:
-    """Return the date on one weekday with the most trips, the earliest if several tie."""
+    """Return the date on one weekday with the most trips.
+
+    Among dates that tie, prefer those inside the feed's stated validity, because a
+    calendar can reach back before the feed was published, and then the earliest.
+    """
     pairs: list[pd.DataFrame] = []
     if not calendar.empty:
         frequency = f"W-{day[:3].upper()}"
@@ -82,11 +100,13 @@ def _busiest_date(
     per_date = scheduled.merge(trip_counts, on="service_id").groupby("date")["trips"].sum()
     if per_date.empty:
         return None
-    return str(
-        per_date.reset_index()
-        .sort_values(["trips", "date"], ascending=[False, True])["date"]
-        .iloc[0]
+    start, end = _stated_validity(feed_info)
+    totals = per_date.reset_index()
+    totals["outside_validity"] = (totals["date"] < start) | (totals["date"] > end)
+    ranked = totals.sort_values(
+        ["trips", "outside_validity", "date"], ascending=[False, True, True]
     )
+    return str(ranked["date"].iloc[0])
 
 
 def _of_feed(table: pd.DataFrame, prefix: str) -> pd.DataFrame:
@@ -104,7 +124,8 @@ def select_service(
     ``date`` means that date in every feed. ``day`` means the busiest such
     weekday in each feed, chosen separately because the validity of different
     agencies' feeds need not overlap, and never a union of several dates, which
-    would mix seasons and shorten headways that no rider experiences.
+    would mix seasons and shorten headways that no rider experiences. Ties go to
+    the earliest date inside the validity the feed states in ``feed_info``.
 
     Parameters
     ----------
@@ -150,7 +171,10 @@ def select_service(
         trips = _of_feed(feed.trips, prefix)
         calendar = _of_feed(feed.calendar, prefix)
         calendar_dates = _of_feed(feed.calendar_dates, prefix)
-        chosen = date if day is None else _busiest_date(trips, calendar, calendar_dates, day)
+        feed_info = _of_feed(feed.feed_info, prefix)
+        chosen = (
+            date if day is None else _busiest_date(trips, calendar, calendar_dates, feed_info, day)
+        )
         active = set() if chosen is None else _services_on(calendar, calendar_dates, chosen)
         if trips["service_id"].isin(active).any():
             service_ids |= active

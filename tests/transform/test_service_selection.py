@@ -34,6 +34,15 @@ def combined(*parts):
     return result
 
 
+def stated_validity(start, end):
+    """Describe a feed_info table giving the dates a feed says it is valid for."""
+    return {
+        "feed_publisher_name": ["Agency"],
+        "feed_start_date": [start],
+        "feed_end_date": [end],
+    }
+
+
 def service_date(network, position=0):
     return network.metadata["feeds"][position]["service_date"]
 
@@ -102,6 +111,63 @@ class TestDay:
             load_feed(write_feed(line_tables())), day="monday", timerange=AM
         )
         assert service_date(network) == "20260105"
+
+    def test_ties_prefer_dates_the_feed_says_it_is_valid_for(self, line_tables, write_feed) -> None:
+        tables = line_tables()
+        tables["feed_info"] = stated_validity("20260301", "20260628")
+        network = create_transit_network(load_feed(write_feed(tables)), day="monday", timerange=AM)
+        assert service_date(network) == "20260302"
+
+    def test_a_stated_start_date_alone_is_enough(self, line_tables, write_feed) -> None:
+        tables = line_tables()
+        tables["feed_info"] = stated_validity("20260301", "")
+        network = create_transit_network(load_feed(write_feed(tables)), day="monday", timerange=AM)
+        assert service_date(network) == "20260302"
+
+    def test_a_stated_end_date_alone_changes_nothing_here(self, line_tables, write_feed) -> None:
+        tables = line_tables()
+        tables["feed_info"] = stated_validity("", "20260628")
+        network = create_transit_network(load_feed(write_feed(tables)), day="monday", timerange=AM)
+        assert service_date(network) == "20260105"
+
+    def test_ties_with_no_date_inside_the_stated_validity_take_the_earliest(
+        self, line_tables, write_feed
+    ) -> None:
+        tables = line_tables()
+        tables["feed_info"] = stated_validity("20300101", "20301231")
+        network = create_transit_network(load_feed(write_feed(tables)), day="monday", timerange=AM)
+        assert service_date(network) == "20260105"
+
+    def test_a_busier_date_outside_the_stated_validity_still_wins(
+        self, line_tables, write_feed
+    ) -> None:
+        quiet = on_service(
+            line_tables(route_id="10", departures=("08:00:00",)), "NOW", "20260601", "20260830"
+        )
+        busy = on_service(
+            line_tables(route_id="20", first_trip=100, first_stop=2000),
+            "OLD",
+            "20260105",
+            "20260531",
+        )
+        tables = combined(quiet, busy)
+        tables["feed_info"] = stated_validity("20260601", "20260830")
+        network = create_transit_network(load_feed(write_feed(tables)), day="monday", timerange=AM)
+        assert service_date(network) == "20260105"
+        assert routes_served(network) == {"20"}
+
+    def test_each_feed_uses_its_own_stated_validity(self, line_tables, write_feed) -> None:
+        first = line_tables(route_id="10")
+        first["feed_info"] = stated_validity("20260301", "20260628")
+        second = line_tables(route_id="20")
+        second["feed_info"] = stated_validity("20260501", "20260628")
+        feeds = [
+            load_feed(write_feed(first, name="first")),
+            load_feed(write_feed(second, name="second")),
+        ]
+        network = create_transit_network(feeds, day="monday", timerange=AM)
+        assert service_date(network, 0) == "20260302"
+        assert service_date(network, 1) == "20260504"
 
     def test_a_holiday_is_not_chosen(self, line_tables, write_feed) -> None:
         tables = line_tables()

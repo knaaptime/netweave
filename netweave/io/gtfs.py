@@ -48,6 +48,7 @@ _TABLES_RECORDING_FEED: tuple[str, ...] = (
     "stops",
     "calendar",
     "calendar_dates",
+    "feed_info",
 )
 
 _NUMERIC_COLUMNS: tuple[str, ...] = (
