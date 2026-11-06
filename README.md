@@ -8,7 +8,7 @@ It is built on
 2. vectorized computation wherever possible
 3. integration with `pandarm` and `geopandas`
 
-`netweave` prepares the network and `pandarm` does the analysis. The package is under active development and has not been released.
+`netweave` prepares the network and `pandarm` does the analysis. The package is under active development.
 
 ## Usage
 
@@ -74,7 +74,3 @@ Merging gives every feed's IDs a prefix from its Onestop ID, so IDs from differe
 Points given to `get_node_ids` and `set_pois` snap only to pedestrian nodes, while query results cover every node, so filter them on `node_type`.
 
 `pandarm`'s `from_hdf5` and `to_crs` do not yet keep these additions or the restricted snapping. Project the pedestrian network before integrating, not after, and save `metadata` separately if you save the network.
-
-## License
-
-`netweave` is released under the BSD 3-Clause license. It depends on `pandarm`, which is licensed under AGPL-3.0.
