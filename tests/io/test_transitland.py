@@ -294,7 +294,7 @@ class TestFetchFeeds:
         assert KEY not in str(caught[0].message)
         assert KEY not in feed.missing[0]["reason"]
 
-    def test_a_restrictive_licence_does_not_exclude_a_feed(self, install, gtfs_zip) -> None:
+    def test_a_restrictive_license_does_not_exclude_a_feed(self, install, gtfs_zip) -> None:
         api = install(
             FakeTransitland(
                 feeds=[feed_record("f-closed", redistribution="no")],
@@ -398,7 +398,7 @@ class TestFetchFeeds:
             feed = fetch_feeds(search="x", api_key=KEY)
         assert [source["prefix"] for source in feed.sources] == ["f-good"]
 
-    def test_skipping_by_licence_is_no_longer_an_option(self, install) -> None:
+    def test_skipping_by_license_is_no_longer_an_option(self, install) -> None:
         install(FakeTransitland())
         with pytest.raises(TypeError, match="skip_no_redistribution"):
             fetch_feeds(search="x", api_key=KEY, skip_no_redistribution=True)

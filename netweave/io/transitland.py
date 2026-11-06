@@ -555,7 +555,7 @@ def download_feed(
 ) -> GTFSFeed | tuple[GTFSFeed, Path]:
     """Download the latest GTFS feed version from Transitland.
 
-    Transitland serves a feed only if its licence allows redistribution. Given a
+    Transitland serves a feed only if its license allows redistribution. Given a
     ``source_url``, a feed Transitland does not supply comes from there instead.
 
     Parameters
@@ -624,9 +624,9 @@ def fetch_feeds(
 ) -> GTFSFeed | list[GTFSFeed]:
     """Search Transitland and download all matching GTFS feeds.
 
-    Every matching feed is collected, whatever its licence says about
+    Every matching feed is collected, whatever its license says about
     redistribution, because netweave only downloads and analyzes feeds. Transitland
-    does not serve a feed whose licence forbids redistribution, so a feed it does not
+    does not serve a feed whose license forbids redistribution, so a feed it does not
     supply comes from the source URL it lists.
 
     One unusable feed does not stop the others. Each feed that fails raises a
