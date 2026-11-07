@@ -1,0 +1,30 @@
+name: netweave-docs
+channels:
+  - conda-forge
+dependencies:
+  - python>=3.12
+  - pip
+  # core
+  - geopandas>=1.1
+  - lazy_loader
+  - numpy>=1.26
+  - pandas>=2.2
+  - pandarm
+  - pyproj>=3.3
+  - pyyaml>=6.0
+  - requests>=2.9
+  - scikit-learn>=1.4
+  - scipy>=1.10
+  - shapely>=2.0
+  - tqdm>=4.60
+  # user guide
+  - geodatasets
+  - matplotlib
+  - osmnx
+  - pyarrow
+  # docs
+  - myst-nb
+  - packaging
+  - sphinx>=7
+  - sphinx-copybutton
+  - sphinx-immaterial

@@ -9,13 +9,13 @@ build-backend = "setuptools.build_meta"
 name = "netweave"
 dynamic = ["version"]
 description = "Weave together GTFS transit and OSM pedestrian networks for use in pandarm accessibility analyses."
-readme = "README.rst"
+readme = "README.md"
 keywords = ["gtfs", "transit", "osm", "pedestrian", "network", "accessibility", "routing"]
-license-files = ["License.txt"]
+license = {text = "BSD-3-Clause"}
 requires-python = ">=3.10"
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: GNU Affero General Public License v3",
+    "License :: OSI Approved :: BSD License",
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering :: GIS",
 ]
@@ -24,14 +24,13 @@ dependencies = [
     "lazy-loader >=0.4",
     "numpy >=1.26",
     "pandas >=2.2",
+    "pyproj >=3.3",
     "scikit-learn >=1.4",
     "shapely >=2.0",
     "scipy >=1.10",
-    "tables >=3.10",
     "requests >=2.9",
     "pyyaml >=6.0",
     "tqdm >=4.60",
-    "matplotlib >=3.5",
     "pandarm"
 ]
 
@@ -50,12 +49,11 @@ dev = [
     "mypy",
 ]
 docs = [
-    "myst-parser",
-    "nbsphinx",
-    "numpydoc",
-    "sphinx",
-    "sphinxcontrib-bibtex",
-    "sphinx_bootstrap_theme",
+    "myst-nb",
+    "packaging",
+    "sphinx>=7",
+    "sphinx-copybutton",
+    "sphinx-immaterial",
 ]
 all = [
     "netweave[plus,dev,docs]"

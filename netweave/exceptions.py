@@ -5,11 +5,7 @@ class NetweaveError(Exception):
     """Base exception for all netweave errors."""
 
 
-# Backward-compatibility alias
-UrbanAccessError = NetweaveError
-
-
-class InvalidGTFS(NetweaveError):
+class InvalidGTFS(NetweaveError):  # noqa: N818
     """Raised when a GTFS feed fails validation."""
 
 
@@ -19,10 +15,6 @@ class NetworkIntegrationError(NetweaveError):
 
 class EmptyNetworkError(NetweaveError):
     """Raised when a network has zero edges or nodes."""
-
-
-class MissingGTFSFile(NetweaveError):
-    """Raised when a required GTFS file is missing."""
 
 
 class TimeFormatError(NetweaveError):

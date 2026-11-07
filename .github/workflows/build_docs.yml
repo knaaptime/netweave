@@ -28,7 +28,7 @@ jobs:
     strategy:
       matrix:
         os: ["ubuntu-latest"]
-        environment-file: [ci/314-latest.yml]
+        environment-file: [docs/docs_env.yml]
         experimental: [false]
     defaults:
       run:
@@ -49,8 +49,27 @@ jobs:
       - name: Install package
         run: pip install . --no-deps 
 
+      # The user guide's street network comes from the public Overpass server, which asks
+      # automated clients to go easy and is often at capacity. osmnx caches each response,
+      # so keep them between runs, and retry once, resuming from what was downloaded.
+      - name: Restore cached street network
+        uses: actions/cache/restore@v6
+        with:
+          path: docs/source/cache
+          key: osmnx-${{ github.run_id }}
+          restore-keys: osmnx-
+
       - name: Make docs
-        run: cd docs; make html
+        run: cd docs; make html || { sleep 300; make html; }
+        env:
+          TRANSITLAND_API_KEY: ${{ secrets.TRANSITLAND_API_KEY }}
+
+      - name: Save cached street network
+        if: always()
+        uses: actions/cache/save@v6
+        with:
+          path: docs/source/cache
+          key: osmnx-${{ github.run_id }}
 
       - name: Zip documentation
         if: ${{ github.event_name == 'pull_request' }}
