@@ -3,8 +3,7 @@
 pandarm's constructor keeps only coordinates, impedances and geometry, so netweave
 adds its node and edge labels and its metadata to the finished network. Those
 additions, and the restriction of snapping to pedestrian nodes, do not survive
-``from_hdf5`` or ``to_crs`` until pandarm learns to keep them. See
-``docs/adr/0002-pandarm-network-is-the-only-network-type.md``.
+``from_hdf5`` or ``to_crs`` until pandarm learns to keep them.
 """
 
 from typing import Any

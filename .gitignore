@@ -69,3 +69,7 @@ tmtagsHistory
 .ipynb_checkpoints
 # Sphinx autosummary output
 docs/source/generated/
+
+# Local working notes, kept out of the repository
+GLOSSARY.md
+docs/adr/

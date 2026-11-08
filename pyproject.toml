@@ -21,7 +21,7 @@ classifiers = [
 ]
 dependencies = [
     "geopandas >=1.1",
-    "lazy-loader >=0.4",
+    "lazy_loader >=0.4",
     "numpy >=1.26",
     "pandas >=2.2",
     "pyproj >=3.3",
@@ -66,6 +66,9 @@ Repository = "https://github.com/oturns/netweave"
 [tool.setuptools.packages.find]
 include = ["netweave", "netweave.*"]
 exclude = ["*.tests", "*.tests.*", "tests.*", "tests"]
+
+[tool.setuptools.package-data]
+netweave = ["py.typed", "*.pyi", "**/*.pyi"]
 
 [tool.ruff]
 line-length = 100
