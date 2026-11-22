@@ -394,7 +394,11 @@ def _load_from_dir(path: Path) -> GTFSFeed:
 
 
 def _read_gtfs_csv(path_or_buffer: Any) -> pd.DataFrame:
-    """Read a GTFS CSV file as text, using pyarrow when it is available."""
+    """Read a GTFS CSV file as text, using pyarrow when it is available.
+
+    pyarrow rejects some files that pandas' own parser reads, such as one whose last
+    line holds only a space, so a file pyarrow refuses is read again without it.
+    """
     read_kwargs: dict[str, Any] = {
         "dtype": str,
         "keep_default_na": False,
@@ -403,10 +407,14 @@ def _read_gtfs_csv(path_or_buffer: Any) -> pd.DataFrame:
     }
     try:
         import pyarrow  # noqa: F401
-
-        read_kwargs["engine"] = "pyarrow"
     except ImportError:
-        read_kwargs["low_memory"] = False
-    table = pd.read_csv(path_or_buffer, **read_kwargs)
+        table = pd.read_csv(path_or_buffer, low_memory=False, **read_kwargs)
+    else:
+        try:
+            table = pd.read_csv(path_or_buffer, engine="pyarrow", **read_kwargs)
+        except pd.errors.ParserError:
+            if hasattr(path_or_buffer, "seek"):
+                path_or_buffer.seek(0)
+            table = pd.read_csv(path_or_buffer, low_memory=False, **read_kwargs)
     table.columns = table.columns.str.strip()
     return table

@@ -55,6 +55,22 @@ class TestLoadFeed:
         with pytest.raises(FileNotFoundError):
             load_feed("/nonexistent/path.zip")
 
+    def test_a_line_holding_only_a_space_is_skipped(self, line_tables, write_feed) -> None:
+        folder = write_feed(line_tables())
+        agency = folder / "agency.txt"
+        agency.write_text(agency.read_text() + " ")
+        assert len(load_feed(folder).agency) == 1
+
+    def test_a_line_holding_only_a_space_is_skipped_in_a_zip(
+        self, line_tables, write_feed, tmp_path
+    ) -> None:
+        folder = write_feed(line_tables())
+        agency = folder / "agency.txt"
+        agency.write_text(agency.read_text() + " ")
+        feed = load_feed(_zip_folder(folder, tmp_path / "feed.zip"))
+        assert len(feed.agency) == 1
+        assert len(feed.stop_times) == 36
+
 
 class TestValidate:
     def test_real_format_feed_passes(self, line_tables, write_feed) -> None:
