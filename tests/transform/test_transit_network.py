@@ -169,6 +169,7 @@ class TestNodes:
             "stop_id",
             "route_id",
             "direction_id",
+            "route_type",
             "feed",
         ]
         assert nodes["node_id"].is_unique
@@ -186,28 +187,83 @@ class TestNodes:
             "minutes",
             "route_id",
             "direction_id",
+            "route_type",
             "geometry",
         ]
         assert isinstance(network.edges, gpd.GeoDataFrame)
         assert network.edges.crs.to_epsg() == 4326
 
 
+class TestRouteType:
+    def test_route_stops_and_transit_edges_carry_their_route_type(self, build) -> None:
+        tables = schedule(
+            {
+                "1": ("BUS", None, [("A", "08:00:00"), ("B", "08:05:00")]),
+                "2": ("RAIL", None, [("A", "08:10:00"), ("B", "08:14:00")]),
+            }
+        )
+        tables["routes"]["route_type"] = ["3", "1"]
+        network = build(None, tables=tables)
+        nodes, edges = network.nodes, network.edges
+        by_route = {f"{PREFIX}BUS": 3, f"{PREFIX}RAIL": 1}
+        route_stops = nodes[nodes["node_type"] == "route_stop"]
+        assert route_stops["route_type"].tolist() == route_stops["route_id"].map(by_route).tolist()
+        assert nodes.loc[nodes["node_type"] == "stop", "route_type"].isna().all()
+        assert edges["route_type"].tolist() == edges["route_id"].map(by_route).tolist()
+        assert edges["route_type"].dtype == "Int64"
+
+    def test_routes_without_a_route_type_leave_it_missing(self, build) -> None:
+        tables = schedule({"1": ("R", None, [("A", "08:00:00"), ("B", "08:05:00")])})
+        del tables["routes"]["route_type"]
+        network = build(None, tables=tables)
+        assert network.edges["route_type"].isna().all()
+
+
 class TestWait:
-    def test_wait_is_half_the_mean_headway(self, build) -> None:
+    # The wait is half the headway a rider arriving at a random moment in the window
+    # experiences: the sum of the squared gaps over twice the window, with the gap after
+    # the last departure running round to the first.
+    FORTY_MINUTES = ("08:00:00", "08:40:00")
+
+    def test_evenly_spaced_departures_wait_half_their_headway(self, build) -> None:
         network = build(
             {
                 "1": ("R", None, [("A", "08:00:00"), ("B", "08:02:00")]),
                 "2": ("R", None, [("A", "08:10:00"), ("B", "08:12:00")]),
-                "3": ("R", None, [("A", "08:25:00"), ("B", "08:27:00")]),
-            }
+                "3": ("R", None, [("A", "08:20:00"), ("B", "08:22:00")]),
+            },
+            timerange=("08:00:00", "08:30:00"),
         )
-        # Gaps of 10 and 15 minutes: mean headway 12.5, wait 6.25.
-        assert boardings(network) == {("A", "R"): pytest.approx(6.25)}
+        # Gaps of 10, 10 and 10 round to the start: headway 10, wait 5.
+        assert boardings(network) == {("A", "R"): pytest.approx(5.0)}
+
+    def test_uneven_gaps_wait_longer_than_half_the_mean_gap(self, build) -> None:
+        network = build(
+            {
+                "1": ("R", None, [("A", "08:00:00"), ("B", "08:02:00")]),
+                "2": ("R", None, [("A", "08:10:00"), ("B", "08:12:00")]),
+                "3": ("R", None, [("A", "08:30:00"), ("B", "08:32:00")]),
+            },
+            timerange=("08:00:00", "09:00:00"),
+        )
+        # Gaps of 10, 20 and 30 in an hour: (100 + 400 + 900) / 60 / 2, where half the mean
+        # gap would be 10.
+        assert boardings(network) == {("A", "R"): pytest.approx(1400 / 120)}
 
     def test_single_departure_counts_the_window_as_its_headway(self, build) -> None:
         network = build({"1": ("R", None, [("A", "08:00:00"), ("B", "08:02:00")])})
         # The window runs three hours: headway 180, wait 90.
         assert boardings(network) == {("A", "R"): pytest.approx(90.0)}
+
+    def test_two_departures_close_together_wait_nearly_as_long_as_one(self, build) -> None:
+        network = build(
+            {
+                "1": ("R", None, [("A", "08:00:00"), ("B", "08:02:00")]),
+                "2": ("R", None, [("A", "08:01:00"), ("B", "08:03:00")]),
+            }
+        )
+        # Gaps of 1 and 179 in three hours: (1 + 179**2) / 180 / 2.
+        assert boardings(network) == {("A", "R"): pytest.approx((1 + 179**2) / 360)}
 
     def test_each_route_waits_separately(self, build) -> None:
         network = build(
@@ -216,11 +272,13 @@ class TestWait:
                 "2": ("FAST", None, [("A", "08:10:00"), ("B", "08:12:00")]),
                 "3": ("SLOW", None, [("A", "08:00:00"), ("C", "08:02:00")]),
                 "4": ("SLOW", None, [("A", "09:00:00"), ("C", "09:02:00")]),
-            }
+            },
+            timerange=("08:00:00", "08:20:00"),
         )
+        # FAST leaves every ten minutes; SLOW leaves once in the twenty-minute window.
         assert boardings(network) == {
             ("A", "FAST"): pytest.approx(5.0),
-            ("A", "SLOW"): pytest.approx(30.0),
+            ("A", "SLOW"): pytest.approx(10.0),
         }
 
     def test_opposite_directions_do_not_pool_their_departures(self, build) -> None:
@@ -230,8 +288,10 @@ class TestWait:
                 "2": ("R", "0", [("A", "08:20:00"), ("B", "08:22:00")]),
                 "3": ("R", "1", [("A", "08:10:00"), ("C", "08:12:00")]),
                 "4": ("R", "1", [("A", "08:30:00"), ("C", "08:32:00")]),
-            }
+            },
+            timerange=self.FORTY_MINUTES,
         )
+        # Pooled, the four departures would wait 5.
         board = network.edges[network.edges["edge_type"] == "board"]
         assert board["minutes"].tolist() == pytest.approx([10.0, 10.0])
 
@@ -241,7 +301,8 @@ class TestWait:
                 "1": ("R", None, [("A", "06:00:00"), ("B", "06:02:00")]),
                 "2": ("R", None, [("A", "08:00:00"), ("B", "08:02:00")]),
                 "3": ("R", None, [("A", "08:20:00"), ("B", "08:22:00")]),
-            }
+            },
+            timerange=self.FORTY_MINUTES,
         )
         assert boardings(network) == {("A", "R"): pytest.approx(10.0)}
 
@@ -251,7 +312,8 @@ class TestWait:
                 "1": ("R", None, [("A", "08:00:00"), ("B", "08:02:00")]),
                 "2": ("R", None, [("A", "08:00:00"), ("B", "08:02:00")]),
                 "3": ("R", None, [("A", "08:20:00"), ("B", "08:22:00")]),
-            }
+            },
+            timerange=self.FORTY_MINUTES,
         )
         assert boardings(network) == {("A", "R"): pytest.approx(10.0)}
 
@@ -303,7 +365,8 @@ class TestFrequencies:
         )
 
     def test_template_trip_becomes_departures_at_its_headway(self, build) -> None:
-        network = build(None, tables=self.frequency_tables())
+        # The window matches the frequency period, so departures fill it evenly.
+        network = build(None, tables=self.frequency_tables(), timerange=("07:00:00", "09:00:00"))
         assert boardings(network) == {
             ("A", "R"): pytest.approx(2.5),
             ("B", "R"): pytest.approx(2.5),
@@ -331,10 +394,11 @@ class TestFrequencies:
                 "headway_secs": ["600"],
             },
         )
-        network = build(None, tables=tables)
+        network = build(None, tables=tables, timerange=("07:00:00", "09:00:00"))
+        # R1 leaves every ten minutes across the two hours; R2 leaves once.
         assert boardings(network) == {
             ("A", "R1"): pytest.approx(5.0),
-            ("A", "R2"): pytest.approx(90.0),
+            ("A", "R2"): pytest.approx(60.0),
         }
 
 
@@ -503,6 +567,28 @@ class TestGeometry:
         lines = self.ride_lines(build(None, tables=tables))
         assert lines[("A", "B")] == [(0.0, 0.0), (1.0, 0.0), (1.5, 0.0)]
         assert lines[("B", "C")] == [(1.5, 0.0), (2.0, 0.0), (3.0, 0.0)]
+
+    def test_each_route_is_cut_along_its_own_shape(self, build) -> None:
+        tables = schedule(
+            {
+                "1": ("R", None, [("A", "08:00:00"), ("B", "08:02:00"), ("C", "08:04:00")]),
+                "2": ("Q", None, [("C", "08:10:00"), ("B", "08:12:00"), ("A", "08:14:00")]),
+            }
+        )
+        tables["stops"]["stop_lat"] = ["0.0", "0.0", "0.0"]
+        tables["stops"]["stop_lon"] = ["0.0", "1.5", "3.0"]
+        tables["trips"]["shape_id"] = ["EAST", "WEST"]
+        tables["shapes"] = {
+            "shape_id": ["EAST"] * 4 + ["WEST"] * 4,
+            "shape_pt_lat": ["0"] * 8,
+            "shape_pt_lon": ["0", "1", "2", "3", "3", "2.5", "1", "0"],
+            "shape_pt_sequence": ["1", "2", "3", "4"] * 2,
+        }
+        lines = self.ride_lines(build(None, tables=tables))
+        assert lines[("A", "B")] == [(0.0, 0.0), (1.0, 0.0), (1.5, 0.0)]
+        assert lines[("B", "C")] == [(1.5, 0.0), (2.0, 0.0), (3.0, 0.0)]
+        assert lines[("C", "B")] == [(3.0, 0.0), (2.5, 0.0), (1.5, 0.0)]
+        assert lines[("B", "A")] == [(1.5, 0.0), (1.0, 0.0), (0.0, 0.0)]
 
     def test_shape_points_follow_their_sequence_past_nine(self, build) -> None:
         tables = self.straight_stops()

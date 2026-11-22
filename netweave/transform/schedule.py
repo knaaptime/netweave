@@ -34,14 +34,18 @@ def timetoseconds(times: pd.Series) -> pd.Series:
     if not present.any():
         return seconds
 
-    parts = times[present].astype(str).str.strip().str.split(":", expand=True)
+    # A schedule repeats a few thousand clock times across millions of rows, so each
+    # distinct string is parsed once.
+    codes, distinct = pd.factorize(times[present])
+    parts = pd.Series(distinct).astype(str).str.strip().str.split(":", expand=True)
     if parts.shape[1] != 3:
         raise TimeFormatError("Time strings must be in HH:MM:SS format")
     numbers = parts.apply(pd.to_numeric, errors="coerce")
     if numbers.isna().to_numpy().any():
         raise TimeFormatError("Time strings must be in HH:MM:SS format")
 
-    seconds[present] = numbers[0] * 3600 + numbers[1] * 60 + numbers[2]
+    parsed = (numbers[0] * 3600 + numbers[1] * 60 + numbers[2]).to_numpy(dtype=float)
+    seconds[present] = parsed[codes]
     return seconds
 
 

@@ -18,7 +18,6 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 import shapely
-from shapely.ops import substring
 
 from netweave._logging import status
 from netweave.exceptions import EmptyNetworkError
@@ -57,8 +56,10 @@ def create_transit_network(
     date : str, optional
         Date as ``YYYYMMDD``, used in every feed.
     use_headways : bool, optional
-        If True (default), a boarding edge costs half the mean headway of its
-        route-stop. If False, boarding costs nothing.
+        If True (default), a boarding edge costs the expected wait at its
+        route-stop for a rider arriving at a random moment in the window, as
+        :func:`~netweave.transform.compute_headways` measures it. If False,
+        boarding costs nothing.
     prune : tuple or numpy.ndarray or geopandas.GeoDataFrame or shapely geometry, optional
         Study area, as ``(minx, miny, maxx, maxy)`` in longitude and latitude or
         as a boundary. Stops outside it are dropped, and a route that leaves the
@@ -68,9 +69,11 @@ def create_transit_network(
     -------
     TransitNetwork
         Edges with ``from``, ``to``, ``edge_type``, ``minutes``, ``route_id``,
-        ``direction_id`` and ``geometry``, and nodes with ``node_id``, ``x``,
-        ``y``, ``node_type``, ``stop_id``, ``route_id``, ``direction_id`` and
-        ``feed``, in EPSG:4326, and metadata recording what went into them.
+        ``direction_id``, ``route_type`` and ``geometry``, and nodes with
+        ``node_id``, ``x``, ``y``, ``node_type``, ``stop_id``, ``route_id``,
+        ``direction_id``, ``route_type`` and ``feed``, in EPSG:4326, and metadata
+        recording what went into them. ``route_type`` is the GTFS mode of each
+        route, so a network can be cut to rail or to bus.
 
     Raises
     ------
@@ -106,7 +109,7 @@ def create_transit_network(
 
     ride = hops.groupby(["from", "to"], as_index=False)["minutes"].mean()
     wait = _wait_by_route_stop(rows, ride, (end - start) / 60.0, use_headways)
-    edges, nodes = _assemble(ride, rows, stops, wait, hops, merged.shapes)
+    edges, nodes = _assemble(ride, rows, stops, wait, hops, merged.shapes, merged.routes)
 
     metadata = {
         "feeds": [
@@ -221,6 +224,7 @@ def _assemble(
     wait: pd.Series,
     hops: pd.DataFrame,
     shapes: pd.DataFrame,
+    routes: pd.DataFrame,
 ) -> tuple[gpd.GeoDataFrame, pd.DataFrame]:
     """Number the nodes and combine ride, boarding and alighting edges."""
     used = pd.unique(ride[["from", "to"]].to_numpy().ravel())
@@ -302,6 +306,14 @@ def _assemble(
     )
     edges = pd.concat([ride_edges, board_edges, alight_edges], ignore_index=True)
 
+    route_types = _route_types(routes)
+    for table in (nodes, edges):
+        table.insert(
+            table.columns.get_loc("direction_id") + 1,
+            "route_type",
+            table["route_id"].map(route_types).astype("Int64"),
+        )
+
     route_stop_xy = pd.DataFrame(
         {
             "x": route_stops["stop_id"].map(located["x"]).to_numpy(),
@@ -312,6 +324,19 @@ def _assemble(
     geometry = np.full(len(edges), None, dtype=object)
     geometry[: len(ride_edges)] = _ride_geometries(ride, hops, route_stop_xy, shapes)
     return gpd.GeoDataFrame(edges, geometry=geometry, crs="EPSG:4326"), nodes
+
+
+def _route_types(routes: pd.DataFrame) -> pd.Series:
+    """Return each route's GTFS ``route_type`` as a nullable integer, indexed by route ID.
+
+    A route type that is absent or not a whole number is missing.
+    """
+    if "route_type" not in routes.columns:
+        return pd.Series(dtype="Int64")
+    unique = routes.drop_duplicates("route_id")
+    numbers = pd.to_numeric(unique["route_type"], errors="coerce")
+    whole = numbers.where(numbers % 1 == 0).astype("Int64")
+    return pd.Series(whole.array, index=unique["route_id"].to_numpy())
 
 
 def _shape_lines(shapes: pd.DataFrame) -> pd.Series:
@@ -357,17 +382,52 @@ def _ride_geometries(
         .drop_duplicates(["from", "to"])
     )
     chosen = ride[["from", "to"]].merge(usual_shape, how="left", on=["from", "to"])["shape_id"]
-    candidates = chosen.map(shape_lines)
-    has_shape = candidates.notna().to_numpy()
+    has_shape = chosen.isin(shape_lines.index).to_numpy()
     if not has_shape.any():
         return lines
 
-    shaped = candidates[has_shape].to_numpy()
-    from_position = shapely.line_locate_point(shaped, shapely.points(start[has_shape]))
-    to_position = shapely.line_locate_point(shaped, shapely.points(end[has_shape]))
-    for index, line, first, last in zip(
-        np.flatnonzero(has_shape), shaped, from_position, to_position, strict=True
-    ):
-        if first < last:
-            lines[index] = substring(line, first, last)
+    which, shape_ids = pd.factorize(chosen[has_shape])
+    shaped = shape_lines.loc[shape_ids].to_numpy()
+    from_position = shapely.line_locate_point(shaped[which], shapely.points(start[has_shape]))
+    to_position = shapely.line_locate_point(shaped[which], shapely.points(end[has_shape]))
+    forward = from_position < to_position
+    if forward.any():
+        lines[np.flatnonzero(has_shape)[forward]] = _cut(
+            shaped, which[forward], from_position[forward], to_position[forward]
+        )
     return lines
+
+
+def _cut(lines: np.ndarray, which: np.ndarray, start: np.ndarray, end: np.ndarray) -> np.ndarray:
+    """Return ``lines[which]``, each cut between two distances along it.
+
+    This is ``shapely.ops.substring`` for many cuts at once. Each line's vertices are
+    measured once, and one sorted search over all of them finds the vertices that fall
+    inside every cut. ``start`` must be less than ``end``.
+    """
+    coords, owner = shapely.get_coordinates(lines, return_index=True)
+    first_vertex = np.r_[True, owner[1:] != owner[:-1]]
+    step = np.r_[0.0, np.hypot(*np.diff(coords, axis=0).T)]
+    step[first_vertex] = 0.0
+    along = np.cumsum(step)
+    along -= along[first_vertex][owner]
+
+    # Give each line its own stretch of one increasing axis, a unit apart, so that a single
+    # searchsorted serves every line.
+    offset = np.r_[0.0, np.cumsum(shapely.length(lines)[:-1] + 1.0)]
+    key = along + offset[owner]
+    low = np.searchsorted(key, start + offset[which], side="right")
+    high = np.searchsorted(key, end + offset[which], side="left")
+
+    # Each cut is its start point, the vertices strictly inside it, and its end point.
+    counts = high - low + 2
+    cut = np.repeat(np.arange(len(which)), counts)
+    position = np.arange(counts.sum()) - np.repeat(np.cumsum(counts) - counts, counts)
+    is_start = position == 0
+    is_end = position == np.repeat(counts - 1, counts)
+    inside = ~(is_start | is_end)
+    points = np.empty((counts.sum(), 2))
+    points[is_start] = shapely.get_coordinates(shapely.line_interpolate_point(lines[which], start))
+    points[is_end] = shapely.get_coordinates(shapely.line_interpolate_point(lines[which], end))
+    points[inside] = coords[(np.repeat(low, counts) + position - 1)[inside]]
+    return shapely.linestrings(points, indices=cut)

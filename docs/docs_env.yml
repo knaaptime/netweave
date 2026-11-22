@@ -9,7 +9,7 @@ dependencies:
   - lazy_loader
   - numpy>=1.26
   - pandas>=2.2
-  - pandarm
+  - pandarm >=0.0.7
   - pyproj>=3.3
   - pyyaml>=6.0
   - requests>=2.9

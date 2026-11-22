@@ -12,9 +12,12 @@ description = "Weave together GTFS transit and OSM pedestrian networks for use i
 readme = "README.md"
 keywords = ["gtfs", "transit", "osm", "pedestrian", "network", "accessibility", "routing"]
 license = {text = "BSD-3-Clause"}
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 classifiers = [
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "License :: OSI Approved :: BSD License",
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering :: GIS",
@@ -31,7 +34,7 @@ dependencies = [
     "requests >=2.9",
     "pyyaml >=6.0",
     "tqdm >=4.60",
-    "pandarm"
+    "pandarm >=0.0.7"
 ]
 
 [project.optional-dependencies]

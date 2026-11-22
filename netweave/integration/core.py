@@ -27,6 +27,7 @@ _EDGE_COLUMNS: list[str] = [
     "minutes",
     "route_id",
     "direction_id",
+    "route_type",
     "geometry",
 ]
 
@@ -47,10 +48,11 @@ def integrate(
     nodes take integer IDs above them. It is always directed, so edges of a
     ``twoway=True`` input appear once in each direction.
 
-    ``nodes_df`` gains ``node_type``, ``stop_id``, ``route_id``, ``direction_id``
-    and ``feed``. ``edges_df`` gains ``edge_type``, ``route_id`` and
-    ``direction_id``. ``metadata`` records what went into the network. Points
-    given to ``get_node_ids`` and ``set_pois`` snap only to pedestrian nodes,
+    ``nodes_df`` gains ``node_type``, ``stop_id``, ``route_id``, ``direction_id``,
+    ``route_type`` and ``feed``. ``edges_df`` gains ``edge_type``, ``route_id``,
+    ``direction_id`` and ``route_type``, which is a float here, NaN where missing, so
+    that ``save_hdf5`` can store it. ``metadata`` records what went into the
+    network. Points given to ``get_node_ids`` and ``set_pois`` snap only to pedestrian nodes,
     while query results cover every node, so filter them on ``node_type``. These
     additions do not yet survive ``from_hdf5`` or ``to_crs``, so project the
     pedestrian network before integrating rather than after.
@@ -100,7 +102,7 @@ def integrate(
     if not pd.api.types.is_integer_dtype(walk_nodes.index):
         raise NetworkIntegrationError("The pedestrian network must have integer node IDs")
 
-    # Network.crs can be stale: pandarm's to_crs sets the real CRS only on its tables.
+    # nodes_df.crs is a pyproj CRS, whatever form Network.crs was given in.
     crs = pyproj.CRS.from_user_input(pedestrian.nodes_df.crs)
     first_transit_id = int(walk_nodes.index.max()) + 1
     transit_nodes, transit_edges = _transit_tables(transit, crs, first_transit_id)
