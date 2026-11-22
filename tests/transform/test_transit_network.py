@@ -220,21 +220,50 @@ class TestRouteType:
 
 
 class TestWait:
-    def test_wait_is_half_the_mean_headway(self, build) -> None:
+    # The wait is half the headway a rider arriving at a random moment in the window
+    # experiences: the sum of the squared gaps over twice the window, with the gap after
+    # the last departure running round to the first.
+    FORTY_MINUTES = ("08:00:00", "08:40:00")
+
+    def test_evenly_spaced_departures_wait_half_their_headway(self, build) -> None:
         network = build(
             {
                 "1": ("R", None, [("A", "08:00:00"), ("B", "08:02:00")]),
                 "2": ("R", None, [("A", "08:10:00"), ("B", "08:12:00")]),
-                "3": ("R", None, [("A", "08:25:00"), ("B", "08:27:00")]),
-            }
+                "3": ("R", None, [("A", "08:20:00"), ("B", "08:22:00")]),
+            },
+            timerange=("08:00:00", "08:30:00"),
         )
-        # Gaps of 10 and 15 minutes: mean headway 12.5, wait 6.25.
-        assert boardings(network) == {("A", "R"): pytest.approx(6.25)}
+        # Gaps of 10, 10 and 10 round to the start: headway 10, wait 5.
+        assert boardings(network) == {("A", "R"): pytest.approx(5.0)}
+
+    def test_uneven_gaps_wait_longer_than_half_the_mean_gap(self, build) -> None:
+        network = build(
+            {
+                "1": ("R", None, [("A", "08:00:00"), ("B", "08:02:00")]),
+                "2": ("R", None, [("A", "08:10:00"), ("B", "08:12:00")]),
+                "3": ("R", None, [("A", "08:30:00"), ("B", "08:32:00")]),
+            },
+            timerange=("08:00:00", "09:00:00"),
+        )
+        # Gaps of 10, 20 and 30 in an hour: (100 + 400 + 900) / 60 / 2, where half the mean
+        # gap would be 10.
+        assert boardings(network) == {("A", "R"): pytest.approx(1400 / 120)}
 
     def test_single_departure_counts_the_window_as_its_headway(self, build) -> None:
         network = build({"1": ("R", None, [("A", "08:00:00"), ("B", "08:02:00")])})
         # The window runs three hours: headway 180, wait 90.
         assert boardings(network) == {("A", "R"): pytest.approx(90.0)}
+
+    def test_two_departures_close_together_wait_nearly_as_long_as_one(self, build) -> None:
+        network = build(
+            {
+                "1": ("R", None, [("A", "08:00:00"), ("B", "08:02:00")]),
+                "2": ("R", None, [("A", "08:01:00"), ("B", "08:03:00")]),
+            }
+        )
+        # Gaps of 1 and 179 in three hours: (1 + 179**2) / 180 / 2.
+        assert boardings(network) == {("A", "R"): pytest.approx((1 + 179**2) / 360)}
 
     def test_each_route_waits_separately(self, build) -> None:
         network = build(
@@ -243,11 +272,13 @@ class TestWait:
                 "2": ("FAST", None, [("A", "08:10:00"), ("B", "08:12:00")]),
                 "3": ("SLOW", None, [("A", "08:00:00"), ("C", "08:02:00")]),
                 "4": ("SLOW", None, [("A", "09:00:00"), ("C", "09:02:00")]),
-            }
+            },
+            timerange=("08:00:00", "08:20:00"),
         )
+        # FAST leaves every ten minutes; SLOW leaves once in the twenty-minute window.
         assert boardings(network) == {
             ("A", "FAST"): pytest.approx(5.0),
-            ("A", "SLOW"): pytest.approx(30.0),
+            ("A", "SLOW"): pytest.approx(10.0),
         }
 
     def test_opposite_directions_do_not_pool_their_departures(self, build) -> None:
@@ -257,8 +288,10 @@ class TestWait:
                 "2": ("R", "0", [("A", "08:20:00"), ("B", "08:22:00")]),
                 "3": ("R", "1", [("A", "08:10:00"), ("C", "08:12:00")]),
                 "4": ("R", "1", [("A", "08:30:00"), ("C", "08:32:00")]),
-            }
+            },
+            timerange=self.FORTY_MINUTES,
         )
+        # Pooled, the four departures would wait 5.
         board = network.edges[network.edges["edge_type"] == "board"]
         assert board["minutes"].tolist() == pytest.approx([10.0, 10.0])
 
@@ -268,7 +301,8 @@ class TestWait:
                 "1": ("R", None, [("A", "06:00:00"), ("B", "06:02:00")]),
                 "2": ("R", None, [("A", "08:00:00"), ("B", "08:02:00")]),
                 "3": ("R", None, [("A", "08:20:00"), ("B", "08:22:00")]),
-            }
+            },
+            timerange=self.FORTY_MINUTES,
         )
         assert boardings(network) == {("A", "R"): pytest.approx(10.0)}
 
@@ -278,7 +312,8 @@ class TestWait:
                 "1": ("R", None, [("A", "08:00:00"), ("B", "08:02:00")]),
                 "2": ("R", None, [("A", "08:00:00"), ("B", "08:02:00")]),
                 "3": ("R", None, [("A", "08:20:00"), ("B", "08:22:00")]),
-            }
+            },
+            timerange=self.FORTY_MINUTES,
         )
         assert boardings(network) == {("A", "R"): pytest.approx(10.0)}
 
@@ -330,7 +365,8 @@ class TestFrequencies:
         )
 
     def test_template_trip_becomes_departures_at_its_headway(self, build) -> None:
-        network = build(None, tables=self.frequency_tables())
+        # The window matches the frequency period, so departures fill it evenly.
+        network = build(None, tables=self.frequency_tables(), timerange=("07:00:00", "09:00:00"))
         assert boardings(network) == {
             ("A", "R"): pytest.approx(2.5),
             ("B", "R"): pytest.approx(2.5),
@@ -358,10 +394,11 @@ class TestFrequencies:
                 "headway_secs": ["600"],
             },
         )
-        network = build(None, tables=tables)
+        network = build(None, tables=tables, timerange=("07:00:00", "09:00:00"))
+        # R1 leaves every ten minutes across the two hours; R2 leaves once.
         assert boardings(network) == {
             ("A", "R1"): pytest.approx(5.0),
-            ("A", "R2"): pytest.approx(90.0),
+            ("A", "R2"): pytest.approx(60.0),
         }
 
 

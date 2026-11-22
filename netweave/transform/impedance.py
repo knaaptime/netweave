@@ -47,12 +47,13 @@ def wait_minutes(headway_minutes: Any) -> Any:
     """Return the expected wait for a rider who arrives at a random moment.
 
     A rider who arrives without consulting the timetable waits, on average, half
-    the time between departures.
+    the headway they experience.
 
     Parameters
     ----------
     headway_minutes : float or array-like
-        Mean time between departures, in minutes.
+        The headway a rider arriving at random experiences, in minutes, as
+        :func:`~netweave.transform.compute_headways` measures it.
 
     Returns
     -------

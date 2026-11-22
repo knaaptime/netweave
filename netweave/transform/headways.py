@@ -8,10 +8,15 @@ def compute_headways(
     by: str | list[str],
     window_minutes: float,
 ) -> pd.DataFrame:
-    """Return the mean time between departures of each group, in minutes.
+    """Return the headway that a rider arriving at a random moment experiences, in minutes.
 
-    A group with a single departure has no gaps to measure, so the length of the
-    window stands in for its headway. Departures at the same moment count once.
+    A rider who arrives at random is more likely to land in a long gap between
+    departures than in a short one, so the headway they experience is the mean gap
+    weighted by its length: the sum of the squared gaps divided by the length of the
+    window. The gap after the last departure runs round to the first, as if the
+    window repeated. For departures evenly spaced across the window this is the
+    ordinary headway, and for a single departure it is the length of the window.
+    Half of it is the expected wait.
 
     Parameters
     ----------
@@ -32,6 +37,12 @@ def compute_headways(
     distinct = (
         departures[[*by, "departure_sec"]].drop_duplicates().sort_values([*by, "departure_sec"])
     )
-    gaps = distinct.groupby(by, dropna=False)["departure_sec"].diff()
-    mean_gap = gaps.groupby([distinct[column] for column in by], dropna=False).mean() / 60.0
-    return mean_gap.fillna(window_minutes).rename("headway").reset_index()
+    minutes = distinct["departure_sec"] / 60.0
+    groups = [distinct[column] for column in by]
+    by_group = minutes.groupby(groups, dropna=False)
+
+    gaps = by_group.diff()
+    squared = (gaps**2).groupby(groups, dropna=False).sum()
+    wrap = (window_minutes - (by_group.max() - by_group.min())).clip(lower=0.0)
+    headway = (squared + wrap**2) / window_minutes
+    return headway.rename("headway").reset_index()

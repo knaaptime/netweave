@@ -25,7 +25,8 @@ UTM = 32610
 X0, Y0 = 550_000.0, 4_180_000.0
 MINUTE = 80.4672
 BLOCK = 10 * MINUTE
-AM = ("07:00:00", "10:00:00")
+# Forty minutes, so that departures twenty minutes apart are evenly spaced across it.
+AM = ("08:00:00", "08:40:00")
 MONDAY = "20260105"
 WEST, MIDDLE, EAST = 900, 901, 902
 
@@ -123,7 +124,8 @@ class TestTripCosts:
             "2": ("R", None, [("A", "09:00:00"), ("B", "09:03:00")]),
         }
         network = integrate(transit_from(hourly), street())
-        # 1 + 30 + 3 + 1 = 35 by transit, against 20 on foot.
+        # One departure in the forty-minute window waits 20: 1 + 20 + 3 + 1 = 25 by transit,
+        # against 20 on foot.
         assert cost(network, WEST, EAST) == pytest.approx(20.0, abs=0.01)
 
     def test_no_wait_when_headways_are_off(self, transit_from) -> None:
@@ -144,7 +146,8 @@ class TestTripCosts:
         positions = {**STOP_POSITIONS, "M": place(BLOCK, 4 * MINUTE)}
         far_apart = street(impedances={"length": [100 * BLOCK] * 4})
         network = integrate(transit_from(trips, positions), far_apart)
-        # 10 wait + 2 ride + 0 alight + 20 wait + 4 ride, with no walk at M.
+        # 10 wait + 2 ride + 0 alight + 20 wait + 4 ride, with no walk at M. R2 leaves M once
+        # in the window, at 08:05, so its wait is half the window.
         assert cost(network, stop_node(network, "A"), stop_node(network, "B")) == pytest.approx(
             36.0, abs=0.01
         )

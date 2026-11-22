@@ -49,11 +49,11 @@ A stop is a node, and so is each route at a stop, in each direction where the fe
 |---|---|---|
 | Walk | pedestrian nodes | walking time |
 | Connector | a stop and its nearest pedestrian node, both ways | walking time |
-| Boarding | a stop to a route at that stop | half the route's mean headway |
+| Boarding | a stop to a route at that stop | the expected wait for that route |
 | Ride | consecutive stops on a route | mean scheduled time across trips in the window |
 | Alighting | a route back to its stop | nothing |
 
-Changing routes at a stop therefore costs the wait for the next route and no walking. A route with one departure in the window counts the whole window as its headway, and `use_headways=False` removes the wait altogether.
+Changing routes at a stop therefore costs the wait for the next route and no walking. The wait is what a rider arriving at a random moment in the window can expect: the sum of the squared gaps between departures over twice the window, with the gap after the last departure running round to the first. For departures evenly spaced across the window that is half the headway, and a route with one departure waits half the window. Uneven or bunched departures wait longer than half their mean gap, because a rider is more likely to arrive during a long gap than a short one. `use_headways=False` removes the wait altogether.
 
 A network represents one time window, so build one for each period you want to compare. Times follow the GTFS clock, where `("24:00:00", "26:00:00")` on a Monday means early on Tuesday.
 

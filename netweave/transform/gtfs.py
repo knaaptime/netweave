@@ -56,8 +56,10 @@ def create_transit_network(
     date : str, optional
         Date as ``YYYYMMDD``, used in every feed.
     use_headways : bool, optional
-        If True (default), a boarding edge costs half the mean headway of its
-        route-stop. If False, boarding costs nothing.
+        If True (default), a boarding edge costs the expected wait at its
+        route-stop for a rider arriving at a random moment in the window, as
+        :func:`~netweave.transform.compute_headways` measures it. If False,
+        boarding costs nothing.
     prune : tuple or numpy.ndarray or geopandas.GeoDataFrame or shapely geometry, optional
         Study area, as ``(minx, miny, maxx, maxy)`` in longitude and latitude or
         as a boundary. Stops outside it are dropped, and a route that leaves the

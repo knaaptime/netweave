@@ -14,7 +14,8 @@ import netweave as nw
 UTM = 32610
 X0, Y0 = 550_000.0, 4_180_000.0
 MINUTE = 80.4672
-AM = ("07:00:00", "10:00:00")
+# Forty minutes, so that the schedules below are evenly spaced across it.
+AM = ("08:00:00", "08:40:00")
 
 
 def lonlat(x_offset, y_offset):
@@ -36,6 +37,8 @@ def test_a_trip_across_two_agencies(write_feed, tmp_path) -> None:
         {
             "t": ("R", None, [("1", "08:00:00"), ("2", "08:04:00")]),
             "u": ("R", None, [("1", "08:10:00"), ("2", "08:14:00")]),
+            "v": ("R", None, [("1", "08:20:00"), ("2", "08:24:00")]),
+            "w": ("R", None, [("1", "08:30:00"), ("2", "08:34:00")]),
         }
     )
     rail = schedule(
