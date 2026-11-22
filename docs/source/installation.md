@@ -1,6 +1,6 @@
 # Installation
 
-netweave supports Python >= 3.10. We recommend using [miniforge] or [pixi].
+netweave supports Python >= 3.12. We recommend using [miniforge] or [pixi].
 
 ## Installing from source
 

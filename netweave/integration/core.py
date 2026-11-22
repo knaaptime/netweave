@@ -100,7 +100,7 @@ def integrate(
     if not pd.api.types.is_integer_dtype(walk_nodes.index):
         raise NetworkIntegrationError("The pedestrian network must have integer node IDs")
 
-    # Network.crs can be stale: pandarm's to_crs sets the real CRS only on its tables.
+    # nodes_df.crs is a pyproj CRS, whatever form Network.crs was given in.
     crs = pyproj.CRS.from_user_input(pedestrian.nodes_df.crs)
     first_transit_id = int(walk_nodes.index.max()) + 1
     transit_nodes, transit_edges = _transit_tables(transit, crs, first_transit_id)
