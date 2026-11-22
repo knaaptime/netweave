@@ -67,8 +67,10 @@ Merging gives every feed's IDs a prefix from its Onestop ID, so IDs from differe
 
 `integrate` keeps the IDs of your pedestrian nodes, uses the CRS of your pedestrian network, and always returns a directed network. It adds to the pandarm network:
 
-- `node_type`, `stop_id`, `route_id`, `direction_id` and `feed` in `nodes_df`
-- `edge_type`, `route_id` and `direction_id` in `edges_df`
+- `node_type`, `stop_id`, `route_id`, `direction_id`, `route_type` and `feed` in `nodes_df`
+- `edge_type`, `route_id`, `direction_id` and `route_type` in `edges_df`
+
+`route_type` is the GTFS mode of the route (3 for bus, 1 for subway, and so on), stored as a float so that `save_hdf5` can write it, and missing on walk edges, connectors and pedestrian nodes.
 - `metadata`, a record of the feeds, dates, time window and settings behind the network
 
 Points given to `get_node_ids` and `set_pois` snap only to pedestrian nodes, while query results cover every node, so filter them on `node_type`.

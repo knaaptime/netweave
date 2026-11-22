@@ -395,6 +395,19 @@ class TestReturnedNetwork:
         assert ride["route_id"].tolist() == ["feed_0_R"]
         assert edges.loc[edges["edge_type"] == "walk", "route_id"].isna().all()
 
+    def test_route_type_survives_integration(self, write_feed) -> None:
+        tables = tables_at(EVERY_TWENTY)
+        tables["routes"]["route_type"] = ["3"]
+        transit = create_transit_network(load_feed(write_feed(tables)), date=MONDAY, timerange=AM)
+        network = integrate(transit, street())
+        edges, nodes = network.edges_df, network.nodes_df
+        transit_edges = edges["edge_type"].isin(["ride", "board", "alight"])
+        # A float, NaN where missing, so that save_hdf5 can store it.
+        assert edges.loc[transit_edges, "route_type"].tolist() == [3.0] * transit_edges.sum()
+        assert edges.loc[~transit_edges, "route_type"].isna().all()
+        assert nodes.loc[nodes["node_type"] == "route_stop", "route_type"].tolist() == [3.0, 3.0]
+        assert nodes.loc[nodes["node_type"] == "pedestrian", "route_type"].isna().all()
+
     def test_nodes_are_labelled(self, transit_from) -> None:
         network = integrate(transit_from(EVERY_TWENTY), street())
         nodes = network.nodes_df

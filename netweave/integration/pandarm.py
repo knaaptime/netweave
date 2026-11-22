@@ -21,8 +21,15 @@ from netweave.transform.impedance import to_minutes
 # overflow into costs near zero. A million minutes is about two years.
 _MAX_MINUTES: float = 1e6
 
-EDGE_LABELS: tuple[str, ...] = ("edge_type", "route_id", "direction_id")
-NODE_LABELS: tuple[str, ...] = ("node_type", "stop_id", "route_id", "direction_id", "feed")
+EDGE_LABELS: tuple[str, ...] = ("edge_type", "route_id", "direction_id", "route_type")
+NODE_LABELS: tuple[str, ...] = (
+    "node_type",
+    "stop_id",
+    "route_id",
+    "direction_id",
+    "route_type",
+    "feed",
+)
 
 
 def _chosen_impedance(network: pandarm.Network, impedance: str | None) -> str:
@@ -149,6 +156,8 @@ def build_network(
         edge_geom=gpd.GeoSeries(edges["geometry"], crs=crs),
         crs=crs,
     )
+    # NumPy arrays keep the network writable by save_hdf5, which cannot store pandas'
+    # nullable integers, so route_type arrives as a float, NaN where it is missing.
     for label in NODE_LABELS:
         network.nodes_df[label] = nodes[label].to_numpy()
     for label in EDGE_LABELS:

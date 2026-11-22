@@ -169,6 +169,7 @@ class TestNodes:
             "stop_id",
             "route_id",
             "direction_id",
+            "route_type",
             "feed",
         ]
         assert nodes["node_id"].is_unique
@@ -186,10 +187,36 @@ class TestNodes:
             "minutes",
             "route_id",
             "direction_id",
+            "route_type",
             "geometry",
         ]
         assert isinstance(network.edges, gpd.GeoDataFrame)
         assert network.edges.crs.to_epsg() == 4326
+
+
+class TestRouteType:
+    def test_route_stops_and_transit_edges_carry_their_route_type(self, build) -> None:
+        tables = schedule(
+            {
+                "1": ("BUS", None, [("A", "08:00:00"), ("B", "08:05:00")]),
+                "2": ("RAIL", None, [("A", "08:10:00"), ("B", "08:14:00")]),
+            }
+        )
+        tables["routes"]["route_type"] = ["3", "1"]
+        network = build(None, tables=tables)
+        nodes, edges = network.nodes, network.edges
+        by_route = {f"{PREFIX}BUS": 3, f"{PREFIX}RAIL": 1}
+        route_stops = nodes[nodes["node_type"] == "route_stop"]
+        assert route_stops["route_type"].tolist() == route_stops["route_id"].map(by_route).tolist()
+        assert nodes.loc[nodes["node_type"] == "stop", "route_type"].isna().all()
+        assert edges["route_type"].tolist() == edges["route_id"].map(by_route).tolist()
+        assert edges["route_type"].dtype == "Int64"
+
+    def test_routes_without_a_route_type_leave_it_missing(self, build) -> None:
+        tables = schedule({"1": ("R", None, [("A", "08:00:00"), ("B", "08:05:00")])})
+        del tables["routes"]["route_type"]
+        network = build(None, tables=tables)
+        assert network.edges["route_type"].isna().all()
 
 
 class TestWait:

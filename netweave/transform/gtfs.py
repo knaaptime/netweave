@@ -67,9 +67,11 @@ def create_transit_network(
     -------
     TransitNetwork
         Edges with ``from``, ``to``, ``edge_type``, ``minutes``, ``route_id``,
-        ``direction_id`` and ``geometry``, and nodes with ``node_id``, ``x``,
-        ``y``, ``node_type``, ``stop_id``, ``route_id``, ``direction_id`` and
-        ``feed``, in EPSG:4326, and metadata recording what went into them.
+        ``direction_id``, ``route_type`` and ``geometry``, and nodes with
+        ``node_id``, ``x``, ``y``, ``node_type``, ``stop_id``, ``route_id``,
+        ``direction_id``, ``route_type`` and ``feed``, in EPSG:4326, and metadata
+        recording what went into them. ``route_type`` is the GTFS mode of each
+        route, so a network can be cut to rail or to bus.
 
     Raises
     ------
@@ -105,7 +107,7 @@ def create_transit_network(
 
     ride = hops.groupby(["from", "to"], as_index=False)["minutes"].mean()
     wait = _wait_by_route_stop(rows, ride, (end - start) / 60.0, use_headways)
-    edges, nodes = _assemble(ride, rows, stops, wait, hops, merged.shapes)
+    edges, nodes = _assemble(ride, rows, stops, wait, hops, merged.shapes, merged.routes)
 
     metadata = {
         "feeds": [
@@ -220,6 +222,7 @@ def _assemble(
     wait: pd.Series,
     hops: pd.DataFrame,
     shapes: pd.DataFrame,
+    routes: pd.DataFrame,
 ) -> tuple[gpd.GeoDataFrame, pd.DataFrame]:
     """Number the nodes and combine ride, boarding and alighting edges."""
     used = pd.unique(ride[["from", "to"]].to_numpy().ravel())
@@ -301,6 +304,14 @@ def _assemble(
     )
     edges = pd.concat([ride_edges, board_edges, alight_edges], ignore_index=True)
 
+    route_types = _route_types(routes)
+    for table in (nodes, edges):
+        table.insert(
+            table.columns.get_loc("direction_id") + 1,
+            "route_type",
+            table["route_id"].map(route_types).astype("Int64"),
+        )
+
     route_stop_xy = pd.DataFrame(
         {
             "x": route_stops["stop_id"].map(located["x"]).to_numpy(),
@@ -311,6 +322,19 @@ def _assemble(
     geometry = np.full(len(edges), None, dtype=object)
     geometry[: len(ride_edges)] = _ride_geometries(ride, hops, route_stop_xy, shapes)
     return gpd.GeoDataFrame(edges, geometry=geometry, crs="EPSG:4326"), nodes
+
+
+def _route_types(routes: pd.DataFrame) -> pd.Series:
+    """Return each route's GTFS ``route_type`` as a nullable integer, indexed by route ID.
+
+    A route type that is absent or not a whole number is missing.
+    """
+    if "route_type" not in routes.columns:
+        return pd.Series(dtype="Int64")
+    unique = routes.drop_duplicates("route_id")
+    numbers = pd.to_numeric(unique["route_type"], errors="coerce")
+    whole = numbers.where(numbers % 1 == 0).astype("Int64")
+    return pd.Series(whole.array, index=unique["route_id"].to_numpy())
 
 
 def _shape_lines(shapes: pd.DataFrame) -> pd.Series:
