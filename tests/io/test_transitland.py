@@ -33,7 +33,7 @@ def feed_record(onestop_id, name=None, key=1, redistribution="yes", has_source=T
     }
 
 
-def stop_in(onestop_id):
+def route_in(onestop_id):
     return {"feed_version": {"feed": {"onestop_id": onestop_id}}}
 
 
@@ -58,10 +58,10 @@ class FakeTransitland:
     """Stand in for the three Transitland endpoints the client uses, and agency servers."""
 
     def __init__(
-        self, feeds=None, stop_pages=None, feed_pages=None, downloads=None, slow=(), sources=None
+        self, feeds=None, route_pages=None, feed_pages=None, downloads=None, slow=(), sources=None
     ):
         self.feed_pages = feed_pages or {None: (feeds or [], None)}
-        self.stop_pages = stop_pages or {None: ([], None)}
+        self.route_pages = route_pages or {None: ([], None)}
         self.downloads = downloads or {}
         self.sources = sources or {}
         self.slow = slow
@@ -84,7 +84,7 @@ class FakeTransitland:
                 return FakeResponse(url, params, status=download)
             return FakeResponse(url, params, content=download)
         pages, field = (
-            (self.stop_pages, "stops") if url.endswith("/stops") else (self.feed_pages, "feeds")
+            (self.route_pages, "routes") if url.endswith("/routes") else (self.feed_pages, "feeds")
         )
         records, after = pages.get(params.get("after"), ([], None))
         return FakeResponse(url, params, payload={field: records, "meta": {"after": after}})
@@ -126,24 +126,45 @@ class TestSearchFeeds:
         api = install(
             FakeTransitland(
                 feeds=[feed_record("f-near", "Near"), feed_record("f-far", "Far")],
-                stop_pages={None: ([stop_in("f-near")], None)},
+                route_pages={None: ([route_in("f-near")], None)},
             )
         )
         table = search_feeds(bbox=(-122.5, 37.7, -122.3, 37.9), api_key=KEY)
         assert table["onestop_id"].tolist() == ["f-near"]
-        assert api.params_for("/stops")[0]["bbox"] == "-122.5,37.7,-122.3,37.9"
+        assert api.params_for("/routes")[0]["bbox"] == "-122.5,37.7,-122.3,37.9"
+
+    def test_area_check_asks_for_full_pages_of_routes_without_geometry(self, install) -> None:
+        api = install(
+            FakeTransitland(
+                feeds=[feed_record("f-a")], route_pages={None: ([route_in("f-a")], None)}
+            )
+        )
+        search_feeds(bbox=(0, 0, 1, 1), api_key=KEY)
+        params = api.params_for("/routes")[0]
+        assert params["limit"] == 1000
+        assert params["include_geometry"] == "false"
+
+    def test_area_check_follows_pagination(self, install) -> None:
+        install(
+            FakeTransitland(
+                feeds=[feed_record("f-1"), feed_record("f-2")],
+                route_pages={None: ([route_in("f-1")], 7), 7: ([route_in("f-2")], None)},
+            )
+        )
+        table = search_feeds(bbox=(0, 0, 1, 1), api_key=KEY)
+        assert table["onestop_id"].tolist() == ["f-1", "f-2"]
 
     def test_area_search_can_skip_the_stop_check(self, install) -> None:
         api = install(FakeTransitland(feeds=[feed_record("f-a")]))
         table = search_feeds(bbox=(0, 0, 1, 1), api_key=KEY, verify_stops=False)
         assert table["onestop_id"].tolist() == ["f-a"]
-        assert api.params_for("/stops") == []
+        assert api.params_for("/routes") == []
 
     def test_text_search_needs_no_stop_check(self, install) -> None:
         api = install(FakeTransitland(feeds=[feed_record("f-a")]))
         search_feeds(search="caltrain", api_key=KEY)
         assert api.params_for("/feeds")[0]["search"] == "caltrain"
-        assert api.params_for("/stops") == []
+        assert api.params_for("/routes") == []
 
     def test_follows_pagination(self, install) -> None:
         install(
@@ -193,11 +214,13 @@ class TestSearchFeeds:
 
     def test_projected_polygon_is_queried_in_lon_lat(self, install) -> None:
         api = install(
-            FakeTransitland(feeds=[feed_record("f-a")], stop_pages={None: ([stop_in("f-a")], None)})
+            FakeTransitland(
+                feeds=[feed_record("f-a")], route_pages={None: ([route_in("f-a")], None)}
+            )
         )
         area = gpd.GeoDataFrame(geometry=[box(-122.5, 37.7, -122.3, 37.9)], crs=4326).to_crs(3857)
         search_feeds(polygon=area, api_key=KEY)
-        west, south, east, north = map(float, api.params_for("/stops")[0]["bbox"].split(","))
+        west, south, east, north = map(float, api.params_for("/routes")[0]["bbox"].split(","))
         assert west == pytest.approx(-122.5)
         assert south == pytest.approx(37.7)
         assert east == pytest.approx(-122.3)
@@ -205,15 +228,17 @@ class TestSearchFeeds:
 
     def test_shapely_polygon_is_accepted(self, install) -> None:
         api = install(
-            FakeTransitland(feeds=[feed_record("f-a")], stop_pages={None: ([stop_in("f-a")], None)})
+            FakeTransitland(
+                feeds=[feed_record("f-a")], route_pages={None: ([route_in("f-a")], None)}
+            )
         )
         search_feeds(polygon=box(0, 1, 2, 3), api_key=KEY)
-        assert api.params_for("/stops")[0]["bbox"] == "0.0,1.0,2.0,3.0"
+        assert api.params_for("/routes")[0]["bbox"] == "0.0,1.0,2.0,3.0"
 
     def test_warns_when_the_stop_check_reaches_its_limit(self, install) -> None:
-        endless = {page: ([stop_in("f-a")], page + 1) for page in range(1, 60)}
-        endless[None] = ([stop_in("f-a")], 1)
-        install(FakeTransitland(feeds=[feed_record("f-a")], stop_pages=endless))
+        endless = {page: ([route_in("f-a")], page + 1) for page in range(1, 60)}
+        endless[None] = ([route_in("f-a")], 1)
+        install(FakeTransitland(feeds=[feed_record("f-a")], route_pages=endless))
         with pytest.warns(UserWarning, match="incomplete"):
             search_feeds(bbox=(0, 0, 1, 1), api_key=KEY)
 

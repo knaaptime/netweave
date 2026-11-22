@@ -29,8 +29,9 @@ _TRANSITLAND_BASE_URL: str = settings.gtfs_api.get(
 _DEFAULT_LIMIT: int = 100
 _MAX_RETRIES: int = 3
 _RETRY_BACKOFF: float = 1.0
-_STOPS_PER_PAGE: int = 100
-_MAX_STOP_PAGES: int = 50
+# Transitland serves at most 1,000 records a page. Twenty pages of routes cover a metro.
+_ROUTES_PER_PAGE: int = 1000
+_MAX_ROUTE_PAGES: int = 20
 
 # Errors that mean one feed is unusable, not that the whole request has failed.
 _FEED_ERRORS: tuple[type[Exception], ...] = (
@@ -353,19 +354,20 @@ def _download_from_source(
         raise TransitlandAPIError(f"{refusal}. Its source URL also failed: {exc}") from None
 
 
-def _get_feed_ids_from_stops(
+def _feeds_with_stops_in(
     bbox_str: str,
     api_key: str,
-    max_pages: int = _MAX_STOP_PAGES,
+    max_pages: int = _MAX_ROUTE_PAGES,
 ) -> set[str]:
-    """Query the Transitland /stops endpoint to find feeds with actual stops in bbox.
+    """Return the Onestop IDs of the feeds with at least one stop inside a bounding box.
 
     The /feeds endpoint with ``bbox`` returns feeds whose *registered* bounding
     box overlaps the query, which includes feeds with incorrect or overly broad
     service areas (e.g., a Sydney feed appearing for a Charleston, SC query).
-    The /stops endpoint returns only stops whose coordinates fall within the
-    bbox, so collecting the unique ``feed_onestop_id`` values gives a reliable
-    list of feeds that actually serve the area.
+    The /routes endpoint with ``bbox`` returns the routes with a stop inside it,
+    so the feeds those routes belong to are the ones that serve the area. A metro
+    has a few thousand routes but tens of thousands of stops, so this takes a page
+    or two where asking for the stops themselves would take dozens.
 
     Parameters
     ----------
@@ -375,15 +377,19 @@ def _get_feed_ids_from_stops(
         Transitland API key.
     max_pages : int, optional
         Maximum number of paginated requests. Reaching it raises a warning,
-        because a feed whose stops lie beyond the limit would go unnoticed.
+        because a feed whose routes lie beyond the limit would go unnoticed.
 
     Returns
     -------
     set[str]
-        Set of feed onestop_ids that have at least one stop in the bbox.
+        The feeds with at least one stop in the bounding box.
     """
-    url = f"{_TRANSITLAND_BASE_URL}/stops"
-    params: dict[str, Any] = {"bbox": bbox_str, "limit": _STOPS_PER_PAGE}
+    url = f"{_TRANSITLAND_BASE_URL}/routes"
+    params: dict[str, Any] = {
+        "bbox": bbox_str,
+        "limit": _ROUTES_PER_PAGE,
+        "include_geometry": "false",
+    }
     feed_ids: set[str] = set()
     after: int | None = None
 
@@ -393,12 +399,12 @@ def _get_feed_ids_from_stops(
             page_params["after"] = after
 
         data = _request(url, page_params, api_key)
-        stops = data.get("stops", [])
-        if not stops:
+        routes = data.get("routes", [])
+        if not routes:
             return feed_ids
 
-        for stop in stops:
-            feed_id = stop.get("feed_version", {}).get("feed", {}).get("onestop_id")
+        for route in routes:
+            feed_id = (route.get("feed_version") or {}).get("feed", {}).get("onestop_id")
             if feed_id:
                 feed_ids.add(feed_id)
 
@@ -407,7 +413,7 @@ def _get_feed_ids_from_stops(
             return feed_ids
 
     warnings.warn(
-        f"Stopped checking stops after {max_pages * _STOPS_PER_PAGE:,}, so the feed list may "
+        f"Stopped checking routes after {max_pages * _ROUTES_PER_PAGE:,}, so the feed list may "
         "be incomplete for an area this large. Pass verify_stops=False to list every feed "
         "whose registered area overlaps it.",
         UserWarning,
@@ -444,13 +450,14 @@ def search_feeds(
 
     At least one of ``bbox``, ``polygon``, or ``search`` must be provided.
 
-    When ``bbox`` or ``polygon`` is provided, the search first queries the
-    Transitland ``/stops`` endpoint to find feeds that have *actual stops*
-    within the bounding box. This avoids returning feeds whose registered
-    bounding boxes are incorrect or overly broad (e.g., a national operator
-    whose bbox happens to overlap a local query area but has no service
-    there). Set ``verify_stops=False`` to skip this verification and use
-    the faster but less accurate ``/feeds`` endpoint directly.
+    When ``bbox`` or ``polygon`` is provided, the search first asks the
+    Transitland ``/routes`` endpoint for the routes with a stop inside the
+    bounding box, and keeps only the feeds those routes belong to. This avoids
+    returning feeds whose registered bounding boxes are incorrect or overly
+    broad (e.g., a national operator whose bbox happens to overlap a local
+    query area but has no service there). Set ``verify_stops=False`` to skip
+    this verification and use the faster but less accurate ``/feeds`` endpoint
+    directly.
 
     Parameters
     ----------
@@ -467,10 +474,10 @@ def search_feeds(
         Transitland API key. Falls back to the ``TRANSITLAND_API_KEY``
         environment variable.
     verify_stops : bool, optional
-        If True (default), verify that feeds have actual stops within the
-        bounding box by querying the ``/stops`` endpoint. This is more
-        accurate but adds an extra API call. Set to False for faster
-        results when accuracy is less critical.
+        If True (default), keep only feeds with a stop inside the bounding
+        box, found through the ``/routes`` endpoint. This is more accurate
+        but adds a request or two. Set to False for faster results when
+        accuracy is less critical.
 
     Returns
     -------
@@ -506,10 +513,10 @@ def search_feeds(
         bbox_str = _bbox_to_string(_polygon_bbox(polygon))
         params["bbox"] = bbox_str
 
-    # For bbox/polygon queries, verify feeds by checking actual stops
+    # For bbox/polygon queries, keep only feeds with a stop in the area
     verified_feed_ids: set[str] | None = None
     if bbox_str is not None and verify_stops:
-        verified_feed_ids = _get_feed_ids_from_stops(bbox_str, key)
+        verified_feed_ids = _feeds_with_stops_in(bbox_str, key)
         if not verified_feed_ids:
             raise NoFeedsFoundError("No GTFS feeds found with stops in the specified area.")
 
@@ -526,7 +533,7 @@ def search_feeds(
         if not feeds:
             break
 
-        # Filter to verified feeds if we did stop-based verification
+        # Filter to verified feeds if the area was checked
         if verified_feed_ids is not None:
             feeds = [f for f in feeds if f.get("onestop_id") in verified_feed_ids]
 
