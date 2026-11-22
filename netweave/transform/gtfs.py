@@ -18,7 +18,6 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 import shapely
-from shapely.ops import substring
 
 from netweave._logging import status
 from netweave.exceptions import EmptyNetworkError
@@ -357,17 +356,52 @@ def _ride_geometries(
         .drop_duplicates(["from", "to"])
     )
     chosen = ride[["from", "to"]].merge(usual_shape, how="left", on=["from", "to"])["shape_id"]
-    candidates = chosen.map(shape_lines)
-    has_shape = candidates.notna().to_numpy()
+    has_shape = chosen.isin(shape_lines.index).to_numpy()
     if not has_shape.any():
         return lines
 
-    shaped = candidates[has_shape].to_numpy()
-    from_position = shapely.line_locate_point(shaped, shapely.points(start[has_shape]))
-    to_position = shapely.line_locate_point(shaped, shapely.points(end[has_shape]))
-    for index, line, first, last in zip(
-        np.flatnonzero(has_shape), shaped, from_position, to_position, strict=True
-    ):
-        if first < last:
-            lines[index] = substring(line, first, last)
+    which, shape_ids = pd.factorize(chosen[has_shape])
+    shaped = shape_lines.loc[shape_ids].to_numpy()
+    from_position = shapely.line_locate_point(shaped[which], shapely.points(start[has_shape]))
+    to_position = shapely.line_locate_point(shaped[which], shapely.points(end[has_shape]))
+    forward = from_position < to_position
+    if forward.any():
+        lines[np.flatnonzero(has_shape)[forward]] = _cut(
+            shaped, which[forward], from_position[forward], to_position[forward]
+        )
     return lines
+
+
+def _cut(lines: np.ndarray, which: np.ndarray, start: np.ndarray, end: np.ndarray) -> np.ndarray:
+    """Return ``lines[which]``, each cut between two distances along it.
+
+    This is ``shapely.ops.substring`` for many cuts at once. Each line's vertices are
+    measured once, and one sorted search over all of them finds the vertices that fall
+    inside every cut. ``start`` must be less than ``end``.
+    """
+    coords, owner = shapely.get_coordinates(lines, return_index=True)
+    first_vertex = np.r_[True, owner[1:] != owner[:-1]]
+    step = np.r_[0.0, np.hypot(*np.diff(coords, axis=0).T)]
+    step[first_vertex] = 0.0
+    along = np.cumsum(step)
+    along -= along[first_vertex][owner]
+
+    # Give each line its own stretch of one increasing axis, a unit apart, so that a single
+    # searchsorted serves every line.
+    offset = np.r_[0.0, np.cumsum(shapely.length(lines)[:-1] + 1.0)]
+    key = along + offset[owner]
+    low = np.searchsorted(key, start + offset[which], side="right")
+    high = np.searchsorted(key, end + offset[which], side="left")
+
+    # Each cut is its start point, the vertices strictly inside it, and its end point.
+    counts = high - low + 2
+    cut = np.repeat(np.arange(len(which)), counts)
+    position = np.arange(counts.sum()) - np.repeat(np.cumsum(counts) - counts, counts)
+    is_start = position == 0
+    is_end = position == np.repeat(counts - 1, counts)
+    inside = ~(is_start | is_end)
+    points = np.empty((counts.sum(), 2))
+    points[is_start] = shapely.get_coordinates(shapely.line_interpolate_point(lines[which], start))
+    points[is_end] = shapely.get_coordinates(shapely.line_interpolate_point(lines[which], end))
+    points[inside] = coords[(np.repeat(low, counts) + position - 1)[inside]]
+    return shapely.linestrings(points, indices=cut)

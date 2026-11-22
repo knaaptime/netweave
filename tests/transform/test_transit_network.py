@@ -504,6 +504,28 @@ class TestGeometry:
         assert lines[("A", "B")] == [(0.0, 0.0), (1.0, 0.0), (1.5, 0.0)]
         assert lines[("B", "C")] == [(1.5, 0.0), (2.0, 0.0), (3.0, 0.0)]
 
+    def test_each_route_is_cut_along_its_own_shape(self, build) -> None:
+        tables = schedule(
+            {
+                "1": ("R", None, [("A", "08:00:00"), ("B", "08:02:00"), ("C", "08:04:00")]),
+                "2": ("Q", None, [("C", "08:10:00"), ("B", "08:12:00"), ("A", "08:14:00")]),
+            }
+        )
+        tables["stops"]["stop_lat"] = ["0.0", "0.0", "0.0"]
+        tables["stops"]["stop_lon"] = ["0.0", "1.5", "3.0"]
+        tables["trips"]["shape_id"] = ["EAST", "WEST"]
+        tables["shapes"] = {
+            "shape_id": ["EAST"] * 4 + ["WEST"] * 4,
+            "shape_pt_lat": ["0"] * 8,
+            "shape_pt_lon": ["0", "1", "2", "3", "3", "2.5", "1", "0"],
+            "shape_pt_sequence": ["1", "2", "3", "4"] * 2,
+        }
+        lines = self.ride_lines(build(None, tables=tables))
+        assert lines[("A", "B")] == [(0.0, 0.0), (1.0, 0.0), (1.5, 0.0)]
+        assert lines[("B", "C")] == [(1.5, 0.0), (2.0, 0.0), (3.0, 0.0)]
+        assert lines[("C", "B")] == [(3.0, 0.0), (2.5, 0.0), (1.5, 0.0)]
+        assert lines[("B", "A")] == [(1.5, 0.0), (1.0, 0.0), (0.0, 0.0)]
+
     def test_shape_points_follow_their_sequence_past_nine(self, build) -> None:
         tables = self.straight_stops()
         tables["trips"]["shape_id"] = ["S"]
