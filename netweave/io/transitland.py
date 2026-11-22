@@ -1,5 +1,6 @@
 """Transitland v2 REST API client for discovering and downloading GTFS feeds."""
 
+import hashlib
 import os
 import time
 import warnings
@@ -233,8 +234,9 @@ def _parse_feeds(feeds: list[dict[str, Any]]) -> pd.DataFrame:
         row["license_commercial"] = license_info.get("commercial_use_allowed")
         row["license_create_derived"] = license_info.get("create_derived_product")
 
-        feed_state = feed.get("feed_state", {})
+        feed_state = feed.get("feed_state") or {}
         row["feed_state"] = feed_state
+        row["feed_version_sha1"] = (feed_state.get("feed_version") or {}).get("sha1")
 
         rows.append(row)
 
@@ -618,6 +620,21 @@ def _value(record: dict[str, Any], key: str) -> str | None:
     return None if value is None or pd.isna(value) else str(value)
 
 
+def _saved_version(output_dir: str | Path | None, feed_id: str, sha1: str | None) -> Path | None:
+    """Return the zip saved for a feed if it is the version Transitland lists, else None.
+
+    Transitland identifies a feed version by the SHA-1 of its zip, so a saved zip
+    with the same digest is the same version.
+    """
+    if output_dir is None or sha1 is None:
+        return None
+    path = Path(output_dir) / f"{feed_id}.zip"
+    if not path.is_file():
+        return None
+    digest = hashlib.sha1(path.read_bytes(), usedforsecurity=False).hexdigest()
+    return path if digest == sha1.lower() else None
+
+
 def fetch_feeds(
     bbox: tuple[float, float, float, float] | None = None,
     polygon: Any | None = None,
@@ -657,7 +674,9 @@ def fetch_feeds(
         If True (default), merge all downloaded feeds into a single
         :class:`GTFSFeed`. If False, return a list of individual feeds.
     output_dir : str or pathlib.Path, optional
-        Directory to save raw zip files.
+        Directory to save raw zip files. A zip already saved there is read instead
+        of downloaded when its SHA-1 matches the version Transitland currently
+        lists, so a study run again downloads only the feeds that have changed.
     timeout : int, optional
         Download timeout in seconds.
     max_workers : int, optional
@@ -693,15 +712,20 @@ def fetch_feeds(
     def _download_one(target: tuple[str, dict[str, Any]]) -> GTFSFeed | str:
         feed_id, record = target
         try:
-            result = download_feed(
-                feed_id,
-                api_key=api_key,
-                output_dir=output_dir,
-                timeout=timeout,
-                disable_tqdm=True,
-                source_url=_value(record, "static_current"),
-            )
-            feed = result[0] if isinstance(result, tuple) else result
+            saved = _saved_version(output_dir, feed_id, _value(record, "feed_version_sha1"))
+            if saved is not None:
+                _log(f"Reading feed '{feed_id}' from {saved}, the version Transitland lists")
+                feed = load_zip(saved, name=feed_id)
+            else:
+                result = download_feed(
+                    feed_id,
+                    api_key=api_key,
+                    output_dir=output_dir,
+                    timeout=timeout,
+                    disable_tqdm=True,
+                    source_url=_value(record, "static_current"),
+                )
+                feed = result[0] if isinstance(result, tuple) else result
             feed.validate()
         except _FEED_ERRORS as error:
             return str(error)

@@ -1,5 +1,6 @@
 """Tests for the Transitland client, with only HTTP replaced."""
 
+import hashlib
 import io
 import time
 import warnings
@@ -437,3 +438,33 @@ class TestFetchFeeds:
         install(FakeTransitland(feeds=[feed_record("f-a")], downloads={"f-a": gtfs_zip()}))
         fetch_feeds(search="x", api_key=KEY, output_dir=tmp_path / "zips")
         assert (tmp_path / "zips" / "f-a.zip").exists()
+
+    def test_a_saved_copy_of_the_listed_version_is_not_downloaded_again(
+        self, install, gtfs_zip, tmp_path
+    ) -> None:
+        archive = gtfs_zip()
+        record = feed_record("f-a")
+        record["feed_state"] = {"feed_version": {"sha1": hashlib.sha1(archive).hexdigest()}}
+        api = install(FakeTransitland(feeds=[record], downloads={"f-a": archive}))
+        fetch_feeds(search="x", api_key=KEY, output_dir=tmp_path)
+        feed = fetch_feeds(search="x", api_key=KEY, output_dir=tmp_path)
+        assert len(api.params_for("/download_latest_feed_version")) == 1
+        assert len(feed.stop_times) > 0
+
+    def test_a_saved_copy_of_another_version_is_downloaded_again(
+        self, install, gtfs_zip, tmp_path
+    ) -> None:
+        record = feed_record("f-a")
+        record["feed_state"] = {"feed_version": {"sha1": "0" * 40}}
+        api = install(FakeTransitland(feeds=[record], downloads={"f-a": gtfs_zip()}))
+        fetch_feeds(search="x", api_key=KEY, output_dir=tmp_path)
+        fetch_feeds(search="x", api_key=KEY, output_dir=tmp_path)
+        assert len(api.params_for("/download_latest_feed_version")) == 2
+
+    def test_a_feed_without_a_listed_version_is_always_downloaded(
+        self, install, gtfs_zip, tmp_path
+    ) -> None:
+        api = install(FakeTransitland(feeds=[feed_record("f-a")], downloads={"f-a": gtfs_zip()}))
+        fetch_feeds(search="x", api_key=KEY, output_dir=tmp_path)
+        fetch_feeds(search="x", api_key=KEY, output_dir=tmp_path)
+        assert len(api.params_for("/download_latest_feed_version")) == 2
